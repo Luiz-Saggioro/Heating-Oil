@@ -7,7 +7,6 @@ Receives commands from dashboard.html and dispatches to oil_agent_v2 or ho_agent
 import asyncio
 import json
 import traceback
-import websockets
 
 # ── AGENT IMPORTS ─────────────────────────────────────────────────────────────
 
@@ -57,8 +56,6 @@ async def handler(websocket):
                     "message": "Unknown command: {}".format(cmd)
                 }))
 
-    except websockets.exceptions.ConnectionClosedOK:
-        print("[WS] Client disconnected cleanly")
     except Exception as e:
         print("[WS] Handler error: {}".format(e))
 
