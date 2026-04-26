@@ -123,8 +123,5 @@ async def main():
     print("  Open dashboard.html in your browser to start.")
     print("=" * 50)
 
-    async with websockets.serve(handler, HOST, PORT):
-        await asyncio.Future()  # run forever
-
 if __name__ == "__main__":
     asyncio.run(main())
