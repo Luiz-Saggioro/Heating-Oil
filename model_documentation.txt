@@ -1,0 +1,350 @@
+================================================================================
+  ENERGY INTELLIGENCE DASHBOARD — STATISTICAL MODEL DOCUMENTATION
+  What the Python code does, the math behind each visual, and why it applies
+  to oil and heating oil as physical commodities (not equities)
+================================================================================
+
+IMPORTANT PREAMBLE: WHY OIL IS NOT A STOCK
+-------------------------------------------
+Stock price models (like Black-Scholes with drift) assume companies grow over
+time — their price has a positive expected return (mu > 0). Commodity prices
+do NOT behave this way. Oil and heating oil are physical goods governed by
+supply and demand. They mean-revert toward a long-run equilibrium cost of
+production. A forward probability distribution for oil must reflect this:
+
+  - The best estimate of tomorrow's oil price is today's price (martingale).
+  - We do NOT project trend continuation into the future.
+  - Only VOLATILITY (sigma) drives the spread of the distribution.
+  - Over long horizons, MEAN REVERSION pulls prices back toward fundamentals.
+
+All models in this dashboard are built on these commodity-appropriate foundations.
+
+
+================================================================================
+VISUAL 1: PRICE HISTORY CHART (both agents)
+================================================================================
+
+WHAT IT SHOWS
+-------------
+- Actual daily closing prices for the past ~90 trading days
+- 7-day and/or 20-day moving averages
+- OLS linear regression trend line
+- Forward forecast cone (1-week for WTI, 14-day for HO)
+
+MOVING AVERAGE
+--------------
+Formula:
+  MA(n)_t = (1/n) * SUM[ P_i,  i = t-n+1 to t ]
+
+In Python:
+  ma7 = np.convolve(prices, np.ones(7)/7, mode='valid')
+
+Why for oil:
+  Oil prices are noisy day-to-day due to order flow and thin liquidity.
+  The moving average smooths out this noise and reveals the underlying trend.
+  7-day captures short-term momentum; 20-day captures the medium-term regime.
+  The crossover of MA7 above MA20 is a classic signal of upward momentum.
+
+OLS LINEAR REGRESSION
+---------------------
+Formula:
+  P_t = alpha + beta * t         (t = trading day index, 0-based)
+
+  beta  = SUM[(t - t_mean)(P - P_mean)] / SUM[(t - t_mean)^2]
+  alpha = P_mean - beta * t_mean
+  R2    = 1 - SS_residual / SS_total
+        = 1 - SUM[(P_t - P_hat_t)^2] / SUM[(P_t - P_mean)^2]
+
+In Python:
+  t      = np.arange(n)
+  ss_tp  = np.sum((t - t_mean) * (prices - p_mean))
+  ss_tt  = np.sum((t - t_mean)**2)
+  beta   = ss_tp / ss_tt
+  alpha  = p_mean - beta * t_mean
+  fitted = [alpha + beta*ti for ti in t]
+  r2     = 1 - ss_res / ss_tot
+
+Why for oil:
+  beta (slope) tells us the average $/day price change over the window.
+  R2 tells us how much of recent price variation was explained by a linear
+  trend vs. noise. High R2 means a clear directional move; low R2 means
+  price action was mostly random/noisy — common in oil during range-bound
+  periods. This is useful for regime identification, NOT for forecasting.
+
+1-WEEK FORECAST CONE (WTI) / 14-DAY FORECAST CONE (HO)
+-------------------------------------------------------
+Formula (Log-Normal with mu=0):
+  For each step h = 1, 2, ..., N trading days forward:
+
+  log_mu  = ln(P_0) - (1/2) * sigma^2 * h
+  log_sig = sigma * sqrt(h)
+
+  Median forecast : P_0 * exp(log_mu)     [slightly below P_0 due to Ito correction]
+  90% CI lower    : exp(log_mu - 1.645 * log_sig)
+  80% CI lower    : exp(log_mu - 1.280 * log_sig)
+
+In Python:
+  sig = np.std(demeaned_returns)       # daily vol, from demeaned returns
+  log_mu  = np.log(P0) - 0.5*sig**2 * h
+  log_sig = sig * np.sqrt(h)
+  mid     = np.exp(log_mu)
+  low     = np.exp(log_mu - 1.645 * log_sig)   # 90% CI
+  high    = np.exp(log_mu + 1.645 * log_sig)
+
+Why mu=0 for oil:
+  The CORRECT assumption for commodity forward pricing is that the futures
+  price is an unbiased predictor of the future spot price. Using mu = mean
+  of recent historical returns would extrapolate any recent trend (e.g. the
+  Iran/Hormuz crisis uptrend of +1%/day) into the future, giving absurd
+  12-month forecasts. Setting mu=0 means: "we have no view on direction,
+  only on the uncertainty around today's price." The forecast cone is
+  symmetric and widens at sqrt(h) rate — consistent with efficient markets.
+
+  The -0.5*sigma^2 term is the Ito correction: it ensures the MEDIAN (not
+  mean) of the lognormal distribution equals the current price. This is the
+  technically correct anchor for a risk-neutral distribution.
+
+
+================================================================================
+VISUAL 2: PRICE PROBABILITY DISTRIBUTION TABLES AND CHARTS
+================================================================================
+
+WHAT IT SHOWS
+-------------
+For each time horizon (1M, 3M, 6M, 9M, 12M), the probability that the
+price of WTI (or HO) will be within each price range at that horizon.
+Columns sum to 100%.
+
+MODEL 1: LOG-NORMAL (weight 55% for WTI, 40% for HO)
+------------------------------------------------------
+Formula:
+  Assume ln(S_T) ~ Normal(mu*, sigma*)
+  
+  mu*    = ln(P_0) - (1/2) * sigma_d^2 * h
+  sigma* = sigma_d * sqrt(h)
+  
+  P(a <= S_T < b) = PHI[(ln(b) - mu*) / sigma*] - PHI[(ln(a) - mu*) / sigma*]
+  
+  where PHI = standard normal CDF
+        sigma_d = daily volatility (std of demeaned log-returns)
+        h = horizon in trading days
+
+In Python:
+  sig = min(np.std(returns - np.mean(returns)), 0.80/np.sqrt(252))
+  log_mu  = np.log(current) - 0.5*sig**2 * horizon_days
+  log_sig = sig * np.sqrt(horizon_days)
+  for each bin [lo, hi]:
+      p_lo = norm.cdf(np.log(lo), loc=log_mu, scale=log_sig)
+      p_hi = norm.cdf(np.log(hi), loc=log_mu, scale=log_sig)
+      prob = p_hi - p_lo
+
+Why for oil:
+  The log-normal is appropriate for commodities because: (a) prices cannot
+  go negative, (b) percentage moves are more meaningful than absolute moves,
+  and (c) it emerges naturally from a GBM with zero drift. The vol cap at
+  80% annualised prevents extreme scenarios from dominating during crisis
+  periods where recent historical vol is temporarily elevated.
+
+MODEL 2: HISTORICAL BOOTSTRAP (weight 45% for WTI, 35% for HO)
+---------------------------------------------------------------
+Formula:
+  1. Demean the returns: r_i* = r_i - mean(r)    [removes trend bias]
+  2. For each simulation j = 1..N:
+     Draw h returns with replacement from {r_i*}
+     S_T^(j) = P_0 * exp(SUM[r_i*, i=1..h])
+  3. P(a <= S_T < b) = count{S_T^(j) in [a,b)} / N
+
+In Python:
+  r = returns - np.mean(returns)   # demean
+  sims  = np.exp(np.sum(np.random.choice(r, size=(N, h), replace=True), axis=1))
+  final = current * sims
+  for each bin: prob = np.sum((final>=lo) & (final<hi)) / N
+
+Why for oil:
+  Oil returns have fat tails, volatility clustering, and non-normal
+  distributions — features the log-normal misses. The bootstrap directly
+  uses the empirical distribution of daily moves without assuming normality.
+  DEMEANING is critical: without it, any recent trend (upward or downward)
+  gets projected forward, which is inappropriate. We want only the SHAPE
+  (volatility structure, fat tails) of the historical distribution, not its
+  direction.
+
+MODEL 3 (HO ONLY): ORNSTEIN-UHLENBECK MEAN REVERSION (weight 25%)
+------------------------------------------------------------------
+Formula (log-OU process):
+  d(ln P) = kappa * (ln(theta) - ln(P)) * dt + sigma * dW
+
+  After time T years, the conditional distribution is:
+  ln(S_T) | ln(P_0) ~ Normal(mu_fwd, sigma_fwd^2)
+
+  mu_fwd   = ln(theta) + (ln(P_0) - ln(theta)) * exp(-kappa * T)
+  sigma_fwd^2 = (sigma_annual^2 / (2*kappa)) * (1 - exp(-2*kappa*T))
+
+  Parameters used:
+    kappa = 0.30 per year (half-life = ln(2)/0.30 = 2.3 years)
+    theta = 90-day average price (empirical long-run mean)
+    sigma_annual = sigma_daily * sqrt(252)
+
+In Python:
+  T       = horizon_days / 252.0        # in years
+  exp_kT  = np.exp(-kappa * T)          # kappa is per-year, T is in years
+  fwd_mean = np.log(theta) + (np.log(P0) - np.log(theta)) * exp_kT
+  fwd_var  = (sig_annual**2 / (2*kappa)) * (1 - exp_kT**2)
+  fwd_sig  = np.sqrt(fwd_var)
+
+Why for oil:
+  Oil is a physical commodity. When prices rise far above marginal cost,
+  producers drill more and consumers switch fuels. When prices fall below
+  cost, production cuts follow. This creates MEAN REVERSION — a force that
+  pulls prices back toward equilibrium. The OU process captures this.
+
+  kappa=0.30/year means at 12 months, about 26% of the gap between current
+  price and long-run mean has been closed. This is consistent with empirical
+  estimates of oil price mean reversion from academic literature (typical
+  estimates range from 0.2 to 0.5/year).
+
+  NOTE ON THE PREVIOUS BUG: The original code had exp_kT = exp(-kappa*T*252),
+  which doubled the time units (T was already in years). This made kappa
+  effectively 252x larger, causing near-instant mean reversion (65% in just
+  21 days). The correct formula uses T directly in years.
+
+ENSEMBLE COMBINATION
+--------------------
+Formula:
+  P_ensemble = w1 * P_log-normal + w2 * P_bootstrap + w3 * P_OU
+
+  WTI: w1=0.55, w2=0.45 (no OU — simpler 2-model ensemble)
+  HO:  w1=0.40, w2=0.35, w3=0.25
+
+Why:
+  Each model captures different aspects of oil price dynamics:
+  - Log-normal: mathematically clean, well-calibrated for short horizons
+  - Bootstrap: captures fat tails and vol clustering from real data
+  - OU: captures fundamental anchoring at long horizons
+  Averaging them produces a more robust distribution than any single model.
+
+
+================================================================================
+VISUAL 3: CUSTOM RISK BANDS (HO only)
+================================================================================
+
+WHAT IT SHOWS
+-------------
+The probability of HO price being within a specific range at each horizon.
+Bands: P(<1.80), P(<3.00), P(3.30-3.69), P(>5.10), P(>6.25)
+
+FORMULA
+-------
+  P(a <= S_T < b) = SUM over all bins i where bin_i intersects [a, b):
+                    P_ensemble(bin_i)
+
+In Python:
+  for each bin i with edges [b_lo, b_hi]:
+      if min(b_hi, hi_target) > max(b_lo, lo_target):
+          prob += P_ensemble[i]
+
+Why for oil:
+  Risk managers and traders care about specific threshold probabilities,
+  not full distributions. P(>5.10) represents the probability of a severe
+  supply shock scenario. P(<3.00) represents a demand-destruction or
+  oversupply scenario. These are the tail risks that matter for hedging.
+
+
+================================================================================
+VISUAL 4: SCENARIO WEIGHTS PIE CHART (HO only)
+================================================================================
+
+WHAT IT SHOWS
+-------------
+Five macro scenarios and their assigned probability weights. These weights
+partially influence the OU long-run mean used in Model 3.
+
+FORMULA (Rule-Based Bayesian Update)
+-------------------------------------
+Start with prior weights (base case):
+  de-escalation = 15%
+  status_quo    = 40%
+  escalation    = 20%
+  recession     = 15%
+  phys_squeeze  = 10%
+
+Update rules (additive adjustments):
+  IF VIX > 30:  escalation += 8%, recession += 5%, status_quo -= 8%
+  IF crack > 30: phys_squeeze += 8%, escalation += 5%
+  IF EIA draw > 3000 Mbbl: phys_squeeze += 5%
+  ... [etc]
+
+Re-normalise so weights sum to 1.0:
+  w_i_final = max(w_i, 0.01) / SUM(max(w_j, 0.01))
+
+Why for oil:
+  Oil markets are heavily regime-dependent. The same volatility in a
+  geopolitical escalation scenario implies very different tail risks than
+  in a recession scenario. VIX measures market stress; the crack spread
+  measures refinery tightness; EIA inventory changes measure physical
+  supply-demand balance. These are the three most reliable real-time signals
+  for oil market regime identification.
+
+
+================================================================================
+WHAT WAS WRONG AND WHAT WAS FIXED
+================================================================================
+
+BUG 1 — Log-Normal drift (mu): WAS mu = mean(historical_returns)
+  PROBLEM: During the Iran/Hormuz crisis (Q1 2026), WTI rose from $61 to $117
+           — a daily log-return of +1.04%/day over 63 days. Projecting this
+           forward: exp(0.0104 * 252) = 13.5x current price at 12 months.
+           This made the 12M distribution show HO prices above $50/gal.
+  FIX:    mu = 0 (risk-neutral/martingale). Only sigma drives width.
+
+BUG 2 — Bootstrap trend bias: WAS sampling raw (trending) returns
+  PROBLEM: Sampling returns that include the crisis uptrend creates simulated
+           paths that continue trending upward, compounding the drift problem.
+  FIX:    Demean returns before bootstrap: r* = r - mean(r)
+
+BUG 3 — OU time-unit double-counting: WAS exp(-kappa * T * 252)
+  PROBLEM: T = horizon_days / 252 was already in years. Multiplying by 252
+           again made kappa effectively 252x too large — meaning the model
+           showed 65% mean-reversion in just 21 days.
+  FIX:    exp_kT = exp(-kappa * T)  where T is in years, kappa in per-year
+
+BUG 4 — OU kappa too slow: WAS kappa = 0.05/year
+  PROBLEM: Half-life = ln(2)/0.05 = 13.9 years. Oil empirically mean-reverts
+           in 1-3 years. A 14-year half-life makes the model indistinguishable
+           from a pure random walk at all practical horizons.
+  FIX:    kappa = 0.30/year (half-life = 2.3 years, consistent with literature)
+
+
+================================================================================
+KEY COMMODITY FINANCE PRINCIPLES APPLIED
+================================================================================
+
+1. MARTINGALE ASSUMPTION FOR FORWARDS
+   For liquid commodity futures, the futures price = best unbiased estimate
+   of future spot price. This means mu=0 in the risk-neutral measure.
+
+2. VOLATILITY SCALING WITH SQRT(TIME)
+   Under random walk assumptions, uncertainty grows as sigma * sqrt(T).
+   This is why the 12M CI is much wider than 1M CI, even though we have
+   no directional view. It reflects genuine irreducible uncertainty.
+
+3. MEAN REVERSION IS REAL FOR COMMODITIES
+   Unlike equities (where prices can stay "overvalued" for decades),
+   commodities are anchored by physical marginal cost of production.
+   For oil: ~$40-50/bbl long-run floor (US shale break-even).
+   For HO: ~$1.50-2.50/gal in a low-crude environment.
+
+4. DEMEANING RETURNS IS ESSENTIAL FOR BOOTSTRAP
+   We want to model future VOLATILITY, not future DIRECTION.
+   By demeaning, we say: "the market will be as volatile as the past,
+   but we make no bet on direction."
+
+5. VOLATILITY CAP (80% ANNUALISED)
+   Extreme crisis periods (e.g. COVID crash, Hormuz closure) can produce
+   temporarily elevated daily vol. Capping at 80% annualised prevents
+   these exceptional periods from dominating long-horizon forecasts.
+   80% annualised = 5.04%/day, which is already a very high vol regime.
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
