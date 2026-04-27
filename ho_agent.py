@@ -308,7 +308,7 @@ def chart_price(history, ho_price):
     plt.yticks(color='#8b9ab5', fontsize=9)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x,_:'${:.2f}'.format(x)))
     for sp in ax.spines.values(): sp.set_edgecolor('#1e2936')
-    fig.suptitle('HEATING OIL -- 1-YEAR PRICE HISTORY',
+    fig.suptitle('HEATING OIL -- 90-DAY PRICE HISTORY',
                  color='#e8edf5', fontsize=13, fontweight='bold',
                  fontfamily='monospace', y=0.97)
     ax.set_ylabel('Price ($/gal)', color='#8b9ab5', fontsize=10)
@@ -468,12 +468,107 @@ def run(send=print):
     # -- Summary ---------------------------------------------------------------
     summary = market_summary(ho, wti, brent, vix, dxy, crack, eia_data, regime, weights)
 
-    # -- Charts ----------------------------------------------------------------
-    send("Generating charts ...")
-    price_chart    = chart_price(history, ho)
-    prob_chart     = chart_prob_table(prob_table)
-    scenario_chart = chart_scenario(weights)
-    bands_chart    = chart_custom_bands(custom_by_horizon)
+    # -- Extended Analytics ----------------------------------------------------
+    send("Computing extended analytics ...")
+    r_arr     = np.array(returns) if len(returns) > 5 else np.random.normal(0, 0.015, 60)
+    sig_daily = float(np.std(r_arr, ddof=1)) or 0.015
+    sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
+    from scipy.stats import norm as _norm
+
+    # 1. CI Bands per horizon
+    ci_bands = {}
+    for h in HORIZONS:
+        days = HORIZON_DAYS[h]
+        lm = np.log(ho) - 0.5 * sig_daily**2 * days
+        ls = sig_daily * np.sqrt(days)
+        ci_bands[h] = {
+            "mid":  round(float(np.exp(lm)), 4),
+            "ci80": [round(float(np.exp(lm - 1.28*ls)), 4), round(float(np.exp(lm + 1.28*ls)), 4)],
+            "ci90": [round(float(np.exp(lm - 1.645*ls)), 4), round(float(np.exp(lm + 1.645*ls)), 4)],
+            "ci95": [round(float(np.exp(lm - 1.96*ls)), 4), round(float(np.exp(lm + 1.96*ls)), 4)],
+        }
+
+    # 2. Volatility heatmap (rolling 10-day annualised vol)
+    vol_heatmap = []
+    if len(history) >= 11:
+        for i in range(10, len(history)):
+            chunk = r_arr[max(0, i-10):i]
+            if len(chunk) >= 2:
+                rv = float(np.std(chunk, ddof=1)) * np.sqrt(252) * 100
+                vol_heatmap.append({"date": history[i]["date"], "vol": round(rv, 2)})
+
+    # 3. Driver analysis
+    vix_v = vix or 20.0
+    crack_v = crack or 15.0
+    seasonal_m = datetime.date.today().month
+    seasonal_w = 8.0 if seasonal_m in (11, 12, 1, 2, 3) else 3.0
+    eia_w = min(10.0, abs(eia_data.get("wow_change") or 0) / 500)
+    raw_drvs = [
+        ("Crude Oil (WTI)",    round(min(20, abs((wti or ho*0.6) - ho*0.6) / ho * 100), 2) if wti else 5.0),
+        ("Crack Spread",       round(min(15, crack_v / 3), 2)),
+        ("Seasonal Demand",    round(seasonal_w, 2)),
+        ("VIX / Market Risk",  round(min(12, max(0, (vix_v - 15) / 2)), 2)),
+        ("EIA Inventory",      round(eia_w, 2)),
+        ("USD Strength (DXY)", round(min(8, abs((dxy or 103) - 103) / 2), 2) if dxy else 2.0),
+    ]
+    tot = sum(v for _, v in raw_drvs) or 1
+    drivers = [{"name": n, "value": round(v, 2), "pct": round(v/tot*100, 1)} for n, v in raw_drvs]
+
+    # 4. Scenario simulation (14 trading days forward)
+    np.random.seed(42)
+    fc_dates = []
+    d = datetime.date.today()
+    while len(fc_dates) < 14:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            fc_dates.append(str(d))
+    scenario_defs = {
+        "Base":            {"drift":  0.000, "vol_mult": 1.0},
+        "High Demand":     {"drift":  0.003, "vol_mult": 1.2},
+        "Supply Disruption":{"drift": 0.007, "vol_mult": 1.8},
+        "Stable Market":   {"drift":  0.001, "vol_mult": 0.7},
+        "Recession":       {"drift": -0.005, "vol_mult": 1.4},
+    }
+    scenario_paths = {}
+    for sname, sp in scenario_defs.items():
+        path = [ho]
+        for _ in range(14):
+            path.append(round(float(path[-1] * np.exp(np.random.normal(sp["drift"], sig_daily * sp["vol_mult"]))), 4))
+        scenario_paths[sname] = {"dates": fc_dates, "prices": path[1:], "final": round(path[-1], 4)}
+
+    # 5. Regional price estimates
+    regional_prices = [
+        {"region": "New England",  "state": "CT", "lat": 41.6, "lon": -72.7, "price": round(ho * 1.18, 4), "factor": "High demand, port logistics"},
+        {"region": "Mid-Atlantic", "state": "NY", "lat": 40.7, "lon": -74.0, "price": round(ho * 1.12, 4), "factor": "Urban distribution premium"},
+        {"region": "Southeast",    "state": "GA", "lat": 33.7, "lon": -84.4, "price": round(ho * 0.97, 4), "factor": "Mild climate, lower demand"},
+        {"region": "Midwest",      "state": "IL", "lat": 41.8, "lon": -87.6, "price": round(ho * 1.02, 4), "factor": "Inland logistics cost"},
+        {"region": "Gulf Coast",   "state": "TX", "lat": 29.7, "lon": -95.4, "price": round(ho * 0.91, 4), "factor": "Refinery proximity"},
+        {"region": "West Coast",   "state": "CA", "lat": 34.0, "lon": -118.2,"price": round(ho * 1.24, 4), "factor": "State taxes + CARB spec"},
+        {"region": "Pacific NW",   "state": "WA", "lat": 47.6, "lon": -122.3,"price": round(ho * 1.15, 4), "factor": "Remote supply chain"},
+        {"region": "Mountain",     "state": "CO", "lat": 39.7, "lon": -104.9,"price": round(ho * 1.07, 4), "factor": "Altitude distribution cost"},
+    ]
+
+    # 6. Profit/cost impact
+    LOGISTICS = 0.18
+    MARGIN    = 0.35
+    retail    = ho + LOGISTICS + MARGIN
+    breakeven = ho + LOGISTICS
+    cost_history = [
+        {"date": r["date"], "cost": round(float(r["price"]) + LOGISTICS, 4),
+         "retail": round(float(r["price"]) + LOGISTICS + MARGIN, 4),
+         "margin_pct": round(MARGIN / (float(r["price"]) + LOGISTICS + MARGIN) * 100, 2)}
+        for r in history[-90:]
+    ]
+    profit_impact = {
+        "retail": round(retail, 4), "breakeven": round(breakeven, 4),
+        "logistics": LOGISTICS, "margin": MARGIN,
+        "margin_pct": round(MARGIN / retail * 100, 2),
+        "cost_history": cost_history,
+        "scenario_retail": {s: round(scenario_paths[s]["final"] + LOGISTICS + MARGIN, 4) for s in scenario_paths},
+    }
+
+    # -- Charts (skipped - Streamlit renders via Plotly) -----------------------
+    send("Analytics complete ...")
 
     # -- Save report -----------------------------------------------------------
     report_path = os.path.join(run_dir, "ho_report_{}.txt".format(ts))
@@ -496,6 +591,7 @@ def run(send=print):
         "agent":      "ho",
         "ho_price":   ho,
         "history":    history,
+        "returns":    [round(float(r), 6) for r in r_arr.tolist()],
         "market_data": {
             "HO": ho, "WTI": wti, "Brent": brent,
             "RBOB": rbob, "DXY": dxy, "VIX": vix,
@@ -507,12 +603,13 @@ def run(send=print):
         "custom_bands":      custom_by_horizon,
         "scenario_weights":  weights,
         "summary":           summary,
-        "charts": {
-            "price":    price_chart,
-            "prob":     prob_chart,
-            "scenario": scenario_chart,
-            "bands":    bands_chart,
-        },
+        # Extended analytics
+        "ci_bands":          ci_bands,
+        "vol_heatmap":       vol_heatmap,
+        "drivers":           drivers,
+        "scenario_paths":    scenario_paths,
+        "regional_prices":   regional_prices,
+        "profit_impact":     profit_impact,
         "run_dir": run_dir,
     }
 

@@ -373,21 +373,113 @@ def run(send=print):
         forecast["direction"], forecast["forecast_low"],
         forecast["forecast_high"], forecast["annualised_vol"]))
 
-    send("Generating charts ...")
-    price_chart = chart_price(history, wti,
-                              forecast["forecast_low"],
-                              forecast["forecast_high"],
-                              forecast["forecast_midpoint"])
-    prob_chart  = chart_prob(wti, prob_table)
+    # -- Extended Analytics ----------------------------------------------------
+    send("Computing extended analytics ...")
+    r_arr     = np.array(returns) if len(returns) > 5 else np.random.normal(0, 0.012, 60)
+    sig_daily = float(np.std(r_arr, ddof=1)) or 0.012
+    sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
+    from scipy.stats import norm as _norm
+
+    # 1. CI Bands
+    ci_bands = {}
+    for h in HORIZONS:
+        days = HORIZON_DAYS[h]
+        lm = np.log(wti) - 0.5 * sig_daily**2 * days
+        ls = sig_daily * np.sqrt(days)
+        ci_bands[h] = {
+            "mid":  round(float(np.exp(lm)), 2),
+            "ci80": [round(float(np.exp(lm - 1.28*ls)), 2), round(float(np.exp(lm + 1.28*ls)), 2)],
+            "ci90": [round(float(np.exp(lm - 1.645*ls)), 2), round(float(np.exp(lm + 1.645*ls)), 2)],
+            "ci95": [round(float(np.exp(lm - 1.96*ls)), 2), round(float(np.exp(lm + 1.96*ls)), 2)],
+        }
+
+    # 2. Volatility heatmap
+    vol_heatmap = []
+    if len(history) >= 11:
+        for i in range(10, len(history)):
+            chunk = r_arr[max(0, i-10):i]
+            if len(chunk) >= 2:
+                rv = float(np.std(chunk, ddof=1)) * np.sqrt(252) * 100
+                vol_heatmap.append({"date": history[i]["date"], "vol": round(rv, 2)})
+
+    # 3. Driver analysis
+    brent_spread = abs((brent or wti+2) - wti)
+    seasonal_m   = datetime.date.today().month
+    raw_drvs = [
+        ("Supply / OPEC",       round(min(15, brent_spread * 1.5), 2)),
+        ("Brent-WTI Spread",    round(min(12, brent_spread * 2.0), 2)),
+        ("Seasonal Demand",     round(6.0 if seasonal_m in (6,7,8) else 3.0, 2)),
+        ("USD Strength",        round(4.5, 2)),
+        ("Geopolitical Risk",   round(max(2.0, forecast["annualised_vol"] / 8), 2)),
+        ("Refinery Utilisation",round(5.0, 2)),
+    ]
+    tot = sum(v for _, v in raw_drvs) or 1
+    drivers = [{"name": n, "value": v, "pct": round(v/tot*100, 1)} for n, v in raw_drvs]
+
+    # 4. Scenario simulation
+    np.random.seed(42)
+    fc_dates = []
+    d = datetime.date.today()
+    while len(fc_dates) < 14:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            fc_dates.append(str(d))
+    scenario_defs = {
+        "Base":            {"drift":  0.000, "vol_mult": 1.0},
+        "High Demand":     {"drift":  0.004, "vol_mult": 1.2},
+        "Supply Disruption":{"drift": 0.008, "vol_mult": 2.0},
+        "Stable Market":   {"drift":  0.001, "vol_mult": 0.6},
+        "Recession":       {"drift": -0.006, "vol_mult": 1.5},
+    }
+    scenario_paths = {}
+    for sname, sp in scenario_defs.items():
+        path = [wti]
+        for _ in range(14):
+            path.append(round(float(path[-1] * np.exp(np.random.normal(sp["drift"], sig_daily * sp["vol_mult"]))), 2))
+        scenario_paths[sname] = {"dates": fc_dates, "prices": path[1:], "final": round(path[-1], 2)}
+
+    # 5. Regional prices (gas retail equivalent)
+    gas_base = wti / 42.0 + WTI_TO_GAS_MARKUP
+    regional_prices = [
+        {"region": "New England",  "state": "CT", "lat": 41.6, "lon": -72.7, "price": round(gas_base * 1.18, 3), "factor": "High taxes, port logistics"},
+        {"region": "Mid-Atlantic", "state": "NY", "lat": 40.7, "lon": -74.0, "price": round(gas_base * 1.13, 3), "factor": "Urban premium"},
+        {"region": "Southeast",    "state": "GA", "lat": 33.7, "lon": -84.4, "price": round(gas_base * 0.96, 3), "factor": "Low state tax"},
+        {"region": "Midwest",      "state": "IL", "lat": 41.8, "lon": -87.6, "price": round(gas_base * 1.04, 3), "factor": "Inland logistics"},
+        {"region": "Gulf Coast",   "state": "TX", "lat": 29.7, "lon": -95.4, "price": round(gas_base * 0.90, 3), "factor": "Refinery proximity"},
+        {"region": "West Coast",   "state": "CA", "lat": 34.0, "lon": -118.2,"price": round(gas_base * 1.28, 3), "factor": "CARB spec + high tax"},
+        {"region": "Pacific NW",   "state": "WA", "lat": 47.6, "lon": -122.3,"price": round(gas_base * 1.17, 3), "factor": "Remote supply chain"},
+        {"region": "Mountain",     "state": "CO", "lat": 39.7, "lon": -104.9,"price": round(gas_base * 1.08, 3), "factor": "Altitude distribution"},
+    ]
+
+    # 6. Profit/cost impact
+    REFINE_COST = 8.0
+    CRACK_MARGIN = 18.0
+    retail_bbl = wti + REFINE_COST + CRACK_MARGIN
+    cost_history = [
+        {"date": r["date"], "cost": round(float(r["price"]) + REFINE_COST, 2),
+         "retail": round(float(r["price"]) + REFINE_COST + CRACK_MARGIN, 2),
+         "margin_pct": round(CRACK_MARGIN / (float(r["price"]) + REFINE_COST + CRACK_MARGIN) * 100, 2)}
+        for r in history[-90:]
+    ]
+    profit_impact = {
+        "retail": round(retail_bbl, 2), "breakeven": round(wti + REFINE_COST, 2),
+        "logistics": REFINE_COST, "margin": CRACK_MARGIN,
+        "margin_pct": round(CRACK_MARGIN / retail_bbl * 100, 2),
+        "cost_history": cost_history,
+        "scenario_retail": {s: round(scenario_paths[s]["final"] + REFINE_COST + CRACK_MARGIN, 2) for s in scenario_paths},
+    }
 
     report_path = os.path.join(run_dir, "oil_report_{}.txt".format(ts))
     gas_path    = os.path.join(run_dir, "gas_price_{}.xlsx".format(ts))
-
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(summary + "\n\n--- FORECAST ---\n" + json.dumps(forecast, indent=2))
     send("  Report saved")
-    generate_gas_excel(wti, returns, gas_path)
-    send("  Gas Excel saved")
+    try:
+        generate_gas_excel(wti, returns, gas_path)
+        send("  Gas Excel saved")
+    except Exception as e:
+        send("  [WARN] Excel skipped: {}".format(e))
+        gas_path = None
     send("=== DONE ===")
 
     return {
@@ -396,9 +488,16 @@ def run(send=print):
         "brent":      brent,
         "forecast":   forecast,
         "history":    history,
+        "returns":    [round(float(r), 6) for r in r_arr.tolist()],
         "prob_table": {h: list(prob_table[h]) for h in HORIZONS},
         "summary":    summary,
-        "charts":     {"price": price_chart, "prob": prob_chart},
+        # Extended analytics
+        "ci_bands":        ci_bands,
+        "vol_heatmap":     vol_heatmap,
+        "drivers":         drivers,
+        "scenario_paths":  scenario_paths,
+        "regional_prices": regional_prices,
+        "profit_impact":   profit_impact,
         "files":      {"report": report_path, "gas_excel": gas_path},
         "run_dir":    run_dir,
     }
