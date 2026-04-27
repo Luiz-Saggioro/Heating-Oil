@@ -563,7 +563,8 @@ def chart_scenario_final(data, agent, sel_scenario):
     ho = agent == "ho"
     names  = list(sp.keys())
     finals = [sp[s]["final"] for s in names]
-    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario==n) else SCEN_COLORS[i%5][:7]+"30"
+    _DIM = ["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
+    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario==n) else _DIM[i%5]
               for i, n in enumerate(names)]
     fig = go.Figure(go.Bar(
         x=names, y=finals,
@@ -757,7 +758,8 @@ def chart_scenario_cost(data, agent, sel_scenario):
         return
     names  = list(sr.keys())
     vals   = list(sr.values())
-    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario == n) else SCEN_COLORS[i%5][:7]+"30"
+    _DIM = ["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
+    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario == n) else _DIM[i%5]
               for i, n in enumerate(names)]
     fig = go.Figure(go.Bar(
         x=names, y=vals, marker_color=colors,
@@ -838,35 +840,96 @@ def chart_custom_bands(data):
 
 
 def render_prob_table(data, agent, sel_horizon, sel_bin):
-    """Interactive sortable probability table."""
+    """Probability table rendered as dark HTML — avoids st.dataframe white background."""
     rows = data.get("prob_table", {})
     if not rows:
         return
 
+    ho = agent == "ho"
     all_bins = [r[0] for r in rows.get(HORIZONS[0], [])]
-    table_data = {"Price Range": all_bins}
+
+    # Build rows sorted so selected bin appears first
+    bin_probs = {}
     for h in HORIZONS:
-        table_data[h] = [f"{round(r[1]*100,2):.2f}%" for r in rows.get(h, [])]
+        for bin_label, prob in rows.get(h, []):
+            if bin_label not in bin_probs:
+                bin_probs[bin_label] = {}
+            bin_probs[bin_label][h] = prob
 
-    df = pd.DataFrame(table_data)
-    if sel_bin:
-        df["_sel"] = df["Price Range"] == sel_bin
-        df = df.sort_values("_sel", ascending=False).drop(columns=["_sel"])
+    sorted_bins = sorted(all_bins, key=lambda b: (b != sel_bin))
 
-    # Style the dataframe
-    def style_rows(row):
-        styles = []
-        for col in row.index:
-            if row["Price Range"] == sel_bin:
-                styles.append("background-color: rgba(0,212,255,.12); color: #00d4ff; font-weight: bold")
-            elif col == sel_horizon:
-                styles.append("background-color: rgba(26,37,64,.5); color: #c8d8ec")
+    # Header
+    th_style = (
+        "background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;"
+        "font-size:9px;text-transform:uppercase;letter-spacing:.8px;"
+        "padding:9px 12px;border-bottom:1px solid #1a2540;text-align:center;"
+        "white-space:nowrap;"
+    )
+    th_left = th_style + "text-align:left;"
+    th_active = th_style + "color:#00d4ff;border-bottom:2px solid #00d4ff;"
+
+    header_cells = f'<th style="{th_left}">PRICE RANGE</th>'
+    for h in HORIZONS:
+        s = th_active if h == sel_horizon else th_style
+        header_cells += f'<th style="{s}">{h}</th>'
+
+    # Rows
+    table_rows = ""
+    for bin_label in sorted_bins:
+        is_sel  = bin_label == sel_bin
+        probs   = bin_probs.get(bin_label, {})
+        h_prob  = probs.get(sel_horizon, 0)
+        is_best = h_prob == max((bin_probs.get(b, {}).get(sel_horizon, 0) for b in all_bins), default=0)
+
+        if is_sel:
+            row_bg = "background:#0a1e30;"
+        elif is_best:
+            row_bg = "background:#0a1e18;"
+        else:
+            row_bg = ""
+
+        td_base = f"padding:7px 12px;border-bottom:1px solid #0f1825;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:center;{row_bg}"
+        td_left = td_base + "text-align:left;"
+
+        if is_sel:
+            label_color = "color:#00d4ff;font-weight:700;"
+        elif is_best:
+            label_color = "color:#1df5a0;font-weight:600;"
+        else:
+            label_color = "color:#c8d8ec;"
+
+        cells = f'<td style="{td_left}{label_color}">{bin_label}</td>'
+        for h in HORIZONS:
+            p   = probs.get(h, 0)
+            pct = f"{p*100:.2f}%"
+            w   = min(60, int(p * (400 if ho else 500)))
+            bar_color = "#00d4ff" if h == sel_horizon else "#1a3050"
+            if is_sel:
+                cell_color = "color:#00d4ff;"
+            elif h == sel_horizon:
+                cell_color = "color:#c8d8ec;"
             else:
-                styles.append("color: #4a6080")
-        return styles
+                cell_color = "color:#4a6080;"
+            bar_html = (
+                f'<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">'
+                f'<div style="width:60px;height:4px;background:#0d1220;border-radius:2px;">'
+                f'<div style="width:{w}px;height:100%;background:{bar_color};border-radius:2px;"></div></div>'
+                f'<span style="min-width:38px;text-align:right;{cell_color}">{pct}</span>'
+                f'</div>'
+            )
+            cells += f'<td style="{td_base}">{bar_html}</td>'
 
-    styled = df.style.apply(style_rows, axis=1)
-    st.dataframe(styled, use_container_width=True, height=320, hide_index=True)
+        table_rows += f"<tr>{cells}</tr>"
+
+    html = f"""
+    <div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">
+    <table style="width:100%;border-collapse:collapse;background:#07090f;">
+      <thead><tr>{header_cells}</tr></thead>
+      <tbody>{table_rows}</tbody>
+    </table>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
