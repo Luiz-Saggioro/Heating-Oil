@@ -577,7 +577,8 @@ def chart_region_map(data, agent, sel_region):
     df["delta_pct"] = ((df["price"] - avg) / avg * 100).round(2)
     df["color"]     = df.apply(lambda r: "#ff3d5a" if r["price"] > avg else "#1df5a0", axis=1)
     df["size"]      = 18
-    df["label"]     = df.apply(lambda r: f"{r['region']}\n${r['price']:.4f if ho else '.3f'}\n{r['delta_pct']:+.1f}% vs avg", axis=1)
+    fmt_price = lambda p: f"${p:.4f}" if ho else f"${p:.3f}"
+    df["label"]     = df.apply(lambda r: f"{r['region']}\n{fmt_price(r['price'])}\n{r['delta_pct']:+.1f}% vs avg", axis=1)
     df["selected"]  = df["region"].apply(lambda r: sel_region == r)
     df["opacity"]   = df["region"].apply(lambda r: 1.0 if not sel_region or sel_region == r else 0.3)
 
