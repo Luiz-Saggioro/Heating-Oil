@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import plotly.io as pio
 from plotly.subplots import make_subplots
 import datetime
 
@@ -32,6 +33,24 @@ code, .stCode, pre {
 }
 
 /* Dark background override */
+.stApp { background: #07090f !important; }
+
+/* Plotly chart iframes - this is the key fix for white chart backgrounds */
+.stPlotlyChart { background: #07090f !important; }
+.stPlotlyChart > div { background: #07090f !important; }
+.stPlotlyChart iframe { background: #07090f !important; }
+div[data-testid="stPlotlyChart"] { background: #07090f !important; }
+div[data-testid="stPlotlyChart"] > div { background: #07090f !important; }
+
+/* Block containers */
+div[data-testid="block-container"] { background: #07090f !important; }
+div[data-testid="stVerticalBlock"] { background: #07090f !important; }
+div[data-testid="column"] { background: #07090f !important; }
+
+/* Remove any white card backgrounds Streamlit adds */
+div[data-testid="stHorizontalBlock"] { background: #07090f !important; }
+.element-container { background: transparent !important; }
+
 .stApp { background: #07090f; }
 section[data-testid="stSidebar"] { background: #0a0e18; border-right: 1px solid #1a2540; }
 section[data-testid="stSidebar"] .stMarkdown { color: #c8d8ec; }
@@ -115,7 +134,7 @@ hr { border-color: #1a2540; }
 """, unsafe_allow_html=True)
 
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
-PLOTLY_TEMPLATE = go.layout.Template(
+_tmpl_obj = go.layout.Template(
     layout=go.Layout(
         paper_bgcolor="#07090f",
         plot_bgcolor="#07090f",
@@ -127,6 +146,9 @@ PLOTLY_TEMPLATE = go.layout.Template(
         margin=dict(l=50, r=20, t=40, b=40),
     )
 )
+pio.templates["energy_dark"] = _tmpl_obj
+pio.templates.default = "plotly_dark+energy_dark"
+PLOTLY_TEMPLATE = "plotly_dark+energy_dark"
 
 SCEN_COLORS = ["#00d4ff", "#ffd060", "#ff6b35", "#ff3d5a", "#9d7aff"]
 HORIZONS    = ["1M", "3M", "6M", "9M", "12M"]
@@ -269,6 +291,8 @@ def chart_price_ci(data, agent):
     fmt = "$.4f" if ho else "$.2f"
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f",
         height=340,
         title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — {'1-Year' if ho else '90-Day'} History + Multi-Band CI Forecast",
                    font=dict(size=12, color="#c8d8ec")),
@@ -277,7 +301,7 @@ def chart_price_ci(data, agent):
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig, use_container_width=True, key="chart_1")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_1")
 
 
 def chart_prob_distribution(data, agent, sel_horizon, sel_bin):
@@ -310,6 +334,8 @@ def chart_prob_distribution(data, agent, sel_horizon, sel_bin):
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f",
         height=360,
         title=dict(text=f"Probability by Price Bin — {sel_horizon}", font=dict(size=11, color="#c8d8ec")),
         xaxis=dict(title="Probability (%)", ticksuffix="%"),
@@ -343,6 +369,8 @@ def chart_cdf(data, sel_horizon):
     ))
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f",
         height=360,
         title=dict(text=f"Cumulative Distribution — {sel_horizon}", font=dict(size=11, color="#c8d8ec")),
         yaxis=dict(title="Cumulative Probability (%)", ticksuffix="%", range=[0, 100]),
@@ -395,6 +423,8 @@ def chart_vol_heatmap(data):
 
     fig.update_layout(
         template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f",
         height=260,
         title=dict(text="Rolling 10-Day Annualised Volatility", font=dict(size=11, color="#c8d8ec")),
         xaxis=dict(title="", type="date"),
@@ -416,7 +446,9 @@ def chart_vol_histogram(data):
         hovertemplate="Vol: %{x:.1f}% — %{y} days<extra></extra>",
     ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=220,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=220,
         title=dict(text="Vol Distribution", font=dict(size=10, color="#c8d8ec")),
         xaxis=dict(title="Annualised Vol (%)", ticksuffix="%"),
         yaxis=dict(title="Days"),
@@ -451,7 +483,9 @@ def chart_drivers(data, agent, sel_driver):
         hovertemplate="%{x}: %{y:.1f}% weight<extra></extra>",
     ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=260,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=260,
         title=dict(text="Price Driver Contribution (rule-based)", font=dict(size=11, color="#c8d8ec")),
         yaxis=dict(title="Relative Weight (%)", ticksuffix="%"),
         xaxis=dict(title=""),
@@ -477,7 +511,9 @@ def chart_driver_donut(data, sel_driver):
         hovertemplate="%{label}: %{value:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=260,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=260,
         title=dict(text="Driver Share", font=dict(size=10, color="#c8d8ec")),
         showlegend=True,
         legend=dict(font=dict(size=8)),
@@ -510,7 +546,9 @@ def chart_scenarios(data, agent, sel_scenario):
 
     fmt = "$.4f" if ho else "$.2f"
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=320,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=320,
         title=dict(text="14-Day Scenario Simulation Paths", font=dict(size=11, color="#c8d8ec")),
         yaxis=dict(tickformat=fmt),
         hovermode="x unified",
@@ -535,7 +573,9 @@ def chart_scenario_final(data, agent, sel_scenario):
         hovertemplate="%{x}: $%{y:.4f}<extra></extra>" if ho else "%{x}: $%{y:.2f}<extra></extra>",
     ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=240,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
         title=dict(text="Scenario Final Prices (Day 14)", font=dict(size=10, color="#c8d8ec")),
         yaxis=dict(tickformat="$.4f" if ho else "$.2f"),
         showlegend=False, bargap=0.2,
@@ -559,7 +599,9 @@ def chart_scenario_weights(data, sel_scenario):
         hovertemplate="%{label}: %{value:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=240,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
         title=dict(text="Scenario Weights (rule-based)", font=dict(size=10, color="#c8d8ec")),
         legend=dict(font=dict(size=8)),
     )
@@ -608,7 +650,9 @@ def chart_region_map(data, agent, sel_region):
         ))
 
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=320,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=320,
         title=dict(text="US Regional Price Distribution", font=dict(size=11, color="#c8d8ec")),
         geo=dict(
             scope="usa",
@@ -649,7 +693,9 @@ def chart_region_bar(data, agent, sel_region):
                   annotation_text=f"Avg ${avg:.4f}" if ho else f"Avg ${avg:.3f}",
                   annotation_font=dict(color="#ffd060", size=9))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=280,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=280,
         title=dict(text="Regional Price Comparison", font=dict(size=11, color="#c8d8ec")),
         yaxis=dict(tickformat="$.4f" if ho else "$.3f"),
         showlegend=False, bargap=0.2,
@@ -690,7 +736,9 @@ def chart_profit_timeline(data, agent):
     ), secondary_y=True)
 
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=300,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=300,
         title=dict(text="Cost, Retail & Margin Over Time (90-Day Rolling)", font=dict(size=11, color="#c8d8ec")),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         hovermode="x unified",
@@ -723,7 +771,9 @@ def chart_scenario_cost(data, agent, sel_scenario):
                   annotation_text="Breakeven retail",
                   annotation_font=dict(color="#ff3d5a", size=9))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=240,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
         title=dict(text="Retail Price by Scenario", font=dict(size=10, color="#c8d8ec")),
         yaxis=dict(tickformat="$.4f" if ho else "$.2f"),
         showlegend=False, bargap=0.2,
@@ -749,7 +799,9 @@ def chart_ci_width(data, agent):
                              mode="lines+markers", line=dict(color="#ffd060", width=1.5, dash="dot"),
                              marker=dict(size=5)))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=240,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
         title=dict(text="Forecast Uncertainty by Horizon (CI Width)", font=dict(size=10, color="#c8d8ec")),
         yaxis=dict(title="Width ($)", tickformat="$.4f" if ho else "$.2f"),
         barmode="overlay", bargap=0.2,
@@ -774,7 +826,9 @@ def chart_custom_bands(data):
             hovertemplate=f"{band} — %{{x}}: %{{y:.1f}}%<extra></extra>",
         ))
     fig.update_layout(
-        template=PLOTLY_TEMPLATE, height=240,
+        template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
         title=dict(text="HO Custom Risk Bands by Horizon", font=dict(size=10, color="#c8d8ec")),
         yaxis=dict(title="Probability (%)", ticksuffix="%"),
         barmode="group", bargap=0.15,
@@ -992,11 +1046,11 @@ def render_dashboard():
     with c1:
         fig = chart_prob_distribution(result, agent, sel_h, sel_bin)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_2")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_2")
     with c2:
         fig = chart_cdf(result, sel_h)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_3")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_3")
 
     # Prob table
     st.markdown("**Probability Table** — all horizons")
@@ -1008,11 +1062,11 @@ def render_dashboard():
     with c1:
         fig = chart_vol_heatmap(result)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_4")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_4")
     with c2:
         fig = chart_vol_histogram(result)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_5")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_5")
 
     # ── ⑤ DRIVER ANALYSIS ────────────────────────────────────────────────────
     section("⑤", "DRIVER ANALYSIS / EXPLAINABILITY", "Select driver in sidebar to isolate · SHAP-style contribution")
@@ -1020,31 +1074,31 @@ def render_dashboard():
     with c1:
         fig = chart_drivers(result, agent, sel_drv)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_6")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_6")
     with c2:
         fig = chart_driver_donut(result, sel_drv)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_7")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_7")
 
     # ── ⑥ SCENARIO SIMULATION ────────────────────────────────────────────────
     section("⑥", "SCENARIO SIMULATION", "Select scenario in sidebar · All panels update together")
     fig = chart_scenarios(result, agent, sel_scen)
     if fig:
-        st.plotly_chart(fig, use_container_width=True, key="chart_8")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_8")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         fig = chart_scenario_weights(result, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_9")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_9")
     with c2:
         fig = chart_scenario_final(result, agent, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_10")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_10")
     with c3:
         fig = chart_ci_width(result, agent)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_11")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_11")
 
     # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────
     section("⑦", "REGIONAL PRICE MAP", "Select region in sidebar to cross-filter · Green=below avg · Red=above avg")
@@ -1052,32 +1106,32 @@ def render_dashboard():
     with c1:
         fig = chart_region_map(result, agent, sel_reg)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_12")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_12")
     with c2:
         fig = chart_region_bar(result, agent, sel_reg)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_13")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_13")
 
     # ── ⑧ PROFIT / COST ──────────────────────────────────────────────────────
     section("⑧", "PROFIT / COST IMPACT DASHBOARD", "Translates prices into business P&L · Select scenario to cross-filter")
     fig = chart_profit_timeline(result, agent)
     if fig:
-        st.plotly_chart(fig, use_container_width=True, key="chart_14")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_14")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         fig = chart_scenario_cost(result, agent, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True, key="chart_15")
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_15")
     with c2:
         if ho:
             fig = chart_custom_bands(result)
             if fig:
-                st.plotly_chart(fig, use_container_width=True, key="chart_16")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_16")
         else:
             fig = chart_ci_width(result, agent)
             if fig:
-                st.plotly_chart(fig, use_container_width=True, key="chart_17")
+                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_17")
     with c3:
         # Margin % mini-chart from cost history
         pi_ch = pi.get("cost_history", [])
@@ -1090,10 +1144,12 @@ def render_dashboard():
                 hovertemplate="Margin: %{y:.1f}%<extra></extra>",
             ))
             fig_m.update_layout(
-                template=PLOTLY_TEMPLATE, height=240,
+                template=PLOTLY_TEMPLATE,
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f", height=240,
                 title=dict(text="Rolling Margin % History", font=dict(size=10, color="#c8d8ec")),
                 yaxis=dict(ticksuffix="%"), showlegend=False)
-            st.plotly_chart(fig_m, use_container_width=True, key="chart_18")
+            st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_18")
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
     section("📄", "MARKET SUMMARY")
