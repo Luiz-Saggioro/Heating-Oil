@@ -277,7 +277,7 @@ def chart_price_ci(data, agent):
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="chart_1")
 
 
 def chart_prob_distribution(data, agent, sel_horizon, sel_bin):
@@ -992,11 +992,11 @@ def render_dashboard():
     with c1:
         fig = chart_prob_distribution(result, agent, sel_h, sel_bin)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_2")
     with c2:
         fig = chart_cdf(result, sel_h)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_3")
 
     # Prob table
     st.markdown("**Probability Table** — all horizons")
@@ -1008,11 +1008,11 @@ def render_dashboard():
     with c1:
         fig = chart_vol_heatmap(result)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_4")
     with c2:
         fig = chart_vol_histogram(result)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_5")
 
     # ── ⑤ DRIVER ANALYSIS ────────────────────────────────────────────────────
     section("⑤", "DRIVER ANALYSIS / EXPLAINABILITY", "Select driver in sidebar to isolate · SHAP-style contribution")
@@ -1020,31 +1020,31 @@ def render_dashboard():
     with c1:
         fig = chart_drivers(result, agent, sel_drv)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_6")
     with c2:
         fig = chart_driver_donut(result, sel_drv)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_7")
 
     # ── ⑥ SCENARIO SIMULATION ────────────────────────────────────────────────
     section("⑥", "SCENARIO SIMULATION", "Select scenario in sidebar · All panels update together")
     fig = chart_scenarios(result, agent, sel_scen)
     if fig:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="chart_8")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         fig = chart_scenario_weights(result, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_9")
     with c2:
         fig = chart_scenario_final(result, agent, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_10")
     with c3:
         fig = chart_ci_width(result, agent)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_11")
 
     # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────
     section("⑦", "REGIONAL PRICE MAP", "Select region in sidebar to cross-filter · Green=below avg · Red=above avg")
@@ -1052,32 +1052,32 @@ def render_dashboard():
     with c1:
         fig = chart_region_map(result, agent, sel_reg)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_12")
     with c2:
         fig = chart_region_bar(result, agent, sel_reg)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_13")
 
     # ── ⑧ PROFIT / COST ──────────────────────────────────────────────────────
     section("⑧", "PROFIT / COST IMPACT DASHBOARD", "Translates prices into business P&L · Select scenario to cross-filter")
     fig = chart_profit_timeline(result, agent)
     if fig:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="chart_14")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         fig = chart_scenario_cost(result, agent, sel_scen)
         if fig:
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_15")
     with c2:
         if ho:
             fig = chart_custom_bands(result)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="chart_16")
         else:
             fig = chart_ci_width(result, agent)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="chart_17")
     with c3:
         # Margin % mini-chart from cost history
         pi_ch = pi.get("cost_history", [])
@@ -1093,7 +1093,7 @@ def render_dashboard():
                 template=PLOTLY_TEMPLATE, height=240,
                 title=dict(text="Rolling Margin % History", font=dict(size=10, color="#c8d8ec")),
                 yaxis=dict(ticksuffix="%"), showlegend=False)
-            st.plotly_chart(fig_m, use_container_width=True)
+            st.plotly_chart(fig_m, use_container_width=True, key="chart_18")
 
     # ── SUMMARY ──────────────────────────────────────────────────────────────
     section("📄", "MARKET SUMMARY")
