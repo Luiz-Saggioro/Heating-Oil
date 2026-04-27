@@ -33,12 +33,12 @@ code, .stCode, pre {
 
 /* Dark background override */
 .stApp { background: #07090f; }
-section[data-testid="stSidebar"] { background: #0d1220; border-right: 1px solid #1a2540; }
+section[data-testid="stSidebar"] { background: #0a0e18; border-right: 1px solid #1a2540; }
 section[data-testid="stSidebar"] .stMarkdown { color: #c8d8ec; }
 
 /* Metric cards */
 div[data-testid="metric-container"] {
-    background: #0d1220;
+    background: #07090f;
     border: 1px solid #1a2540;
     border-radius: 8px;
     padding: 12px 16px;
@@ -75,14 +75,14 @@ h1, h2, h3 { font-family: 'Syne', sans-serif !important; color: #c8d8ec !importa
 
 /* Selectbox, radio */
 .stSelectbox, .stRadio { color: #c8d8ec; }
-.stSelectbox > div > div { background: #0d1220; border-color: #1a2540; color: #c8d8ec; }
+.stSelectbox > div > div { background: #07090f; border-color: #1a2540; color: #c8d8ec; }
 
 /* Dividers */
 hr { border-color: #1a2540; }
 
 /* Status box */
 .status-box {
-    background: #0d1220;
+    background: #07090f;
     border: 1px solid #1a2540;
     border-radius: 8px;
     padding: 12px 16px;
@@ -97,7 +97,7 @@ hr { border-color: #1a2540; }
 /* Section badge */
 .sec-badge {
     display: inline-block;
-    background: #1a2540;
+    background: #0d1220;
     border: 1px solid #243660;
     border-radius: 4px;
     padding: 3px 10px;
@@ -117,13 +117,13 @@ hr { border-color: #1a2540; }
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
 PLOTLY_TEMPLATE = go.layout.Template(
     layout=go.Layout(
-        paper_bgcolor="#0d1220",
-        plot_bgcolor="#0d1220",
+        paper_bgcolor="#07090f",
+        plot_bgcolor="#07090f",
         font=dict(family="JetBrains Mono, monospace", color="#4a6080", size=10),
         colorway=["#00d4ff", "#f5a623", "#1df5a0", "#ff3d5a", "#9d7aff", "#ffd060"],
         xaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
         yaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
-        legend=dict(bgcolor="rgba(13,18,32,.8)", bordercolor="#1a2540", borderwidth=1),
+        legend=dict(bgcolor="rgba(7,9,15,.85)", bordercolor="#1a2540", borderwidth=1),
         margin=dict(l=50, r=20, t=40, b=40),
     )
 )
@@ -612,8 +612,8 @@ def chart_region_map(data, agent, sel_region):
         title=dict(text="US Regional Price Distribution", font=dict(size=11, color="#c8d8ec")),
         geo=dict(
             scope="usa",
-            bgcolor="#0d1220",
-            landcolor="#121929",
+            bgcolor="#07090f",
+            landcolor="#0d1220",
             coastlinecolor="#1a2540",
             showlakes=False,
             showrivers=False,
