@@ -264,7 +264,12 @@ def render_price_history(result, agent):
     fig.add_trace(go.Scatter(x=labels,y=ma,name=f"{maN}d MA",
         line=dict(color="#9d7aff",width=1.5,dash="dot")))
 
-    yrange = [1.5,5.0] if ho else None
+    if ho:
+        p_min = min(prices)
+        p_max = max(prices)
+        yrange = [round(p_min - 0.25, 4), round(p_max + 0.25, 4)]
+    else:
+        yrange = None
     fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=340,
         title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History",
                    font=dict(size=12,color="#c8d8ec")),
