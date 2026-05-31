@@ -17,7 +17,8 @@ import os
 # Load .env if present (local dev)
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(dotenv_path=_env_path, override=True)
 except ImportError:
     pass
 
@@ -227,11 +228,22 @@ def render_snapshot(result, agent):
 
 # ── ② PRICE HISTORY ──────────────────────────────────────────────────────────
 def render_price_history(result, agent):
-    """Price history with NO prediction cone (removed as per doc).
-    Y-axis range: 1.5–5.0 for HO. Time-period selector added."""
+    """Price history — dynamic y-axis, period selector, synthetic data warning."""
     section("02", "PRICE HISTORY", "Select time period below")
     ho   = agent=="ho"
     hist = result.get("history",[])
+
+    # Warn loudly if data is synthetic (all real sources failed)
+    is_synthetic = result.get("is_synthetic_history", False)
+    if not is_synthetic:
+        is_synthetic = any(r.get("synthetic") for r in hist)
+    if is_synthetic:
+        st.error(
+            "**DATA WARNING: Price history is SYNTHETIC (simulated) — all live data sources "
+            "failed to respond.** The chart below does NOT reflect real market prices. "
+            "Check the Run Log at the bottom of the page for details on which sources failed."
+        )
+
     if len(hist)<2:
         st.info("Not enough history data yet.")
         return
