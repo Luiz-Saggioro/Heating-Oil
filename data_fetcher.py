@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
 data_fetcher.py — Multi-source waterfall for live commodity prices.
-Shared by oil_agent_v2.py and ho_agent.py.
 
-Waterfall order per ticker:
-  1. Yahoo Finance JSON API  (real-time quote, ~15min delayed)
-  2. Stooq CSV               (daily close, no API key)
-  3. FRED API                (daily close, free, no key needed for public series)
-  4. Barchart HTML scrape    (delayed quote)
-  5. Hardcoded fallback      (raises a clear warning)
+Waterfall order (live spot price):
+  1. yfinance library      — handles Yahoo auth cookies internally, most reliable
+  2. Yahoo Finance JSON v8 — direct API call with browser headers
+  3. FRED CSV              — daily close for WTI/Brent/VIX/DXY only
 
-History (90-day OHLC for chart + vol model) is fetched via Stooq CSV
-because it is the most stable free source for continuous futures history.
+History (daily OHLC for chart + vol model):
+  1. yfinance .history()   — primary, real OHLC data going back years
+  2. Yahoo Finance v8 JSON — secondary
+  3. Synthetic fallback     — CLEARLY FLAGGED, never silent
+
+All data is flagged with its source and age in the run log.
 """
 
 import re, json, time, datetime, warnings
@@ -20,7 +21,26 @@ from typing import Optional
 
 warnings.filterwarnings("ignore")
 
-# ── HEADERS ───────────────────────────────────────────────────────────────────
+# ── TICKER MAP ────────────────────────────────────────────────────────────────
+# name -> (yfinance_ticker, yahoo_v8_ticker, fred_series)
+TICKER_MAP = {
+    "HO":    ("HO=F",      "HO=F",      None          ),
+    "WTI":   ("CL=F",      "CL=F",      "DCOILWTICO"  ),
+    "Brent": ("BZ=F",      "BZ=F",      "DCOILBRENTEU"),
+    "RBOB":  ("RB=F",      "RB=F",      None          ),
+    "DXY":   ("DX-Y.NYB",  "DX-Y.NYB",  "DTWEXBGS"    ),
+    "VIX":   ("^VIX",      "%5EVIX",    "VIXCLS"      ),
+}
+
+# Sanity ranges — reject obviously wrong scraped values
+_SANE = {
+    "HO":    (1.0,  15.0),
+    "WTI":   (30.0, 250.0),
+    "Brent": (30.0, 260.0),
+    "RBOB":  (0.5,  15.0),
+    "DXY":   (70.0, 150.0),
+    "VIX":   (8.0,  100.0),
+}
 
 _HEADERS = {
     "User-Agent": (
@@ -28,225 +48,165 @@ _HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept": "application/json, text/html, */*",
+    "Accept-Language": "en-US,en;q=0.9",
 }
-
-# ── TICKER MAP ────────────────────────────────────────────────────────────────
-# Maps our internal name -> (yahoo_ticker, stooq_ticker, fred_series, barchart_slug)
-# None means "not available from that source"
-
-TICKER_MAP = {
-    # name          yahoo      stooq      fred              barchart
-    "HO":  ("HO=F",   "ho.f",    None,             "LO"),
-    "WTI": ("CL=F",   "cl.f",    "DCOILWTICO",     "CL"),
-    "Brent":("BZ=F",  "bz.f",    "DCOILBRENTEU",   "CB"),
-    "RBOB":("RB=F",   "rb.f",    None,             "RB"),
-    "DXY": ("DX-Y.NYB","dxy.b",  "DTWEXBGS",       None),
-    "VIX": ("^VIX",   "^vix",    "VIXCLS",         None),
-}
-
-# Plausible price ranges for sanity-checking scraped values
-_SANE_RANGES = {
-    "HO":    (1.0,  15.0),
-    "WTI":   (30.0, 200.0),
-    "Brent": (30.0, 220.0),
-    "RBOB":  (0.8,  10.0),
-    "DXY":   (70.0, 140.0),
-    "VIX":   (8.0,  90.0),
-}
-
-# ── LOW-LEVEL HTTP ────────────────────────────────────────────────────────────
-
-def _get(url, timeout=12, extra_headers=None):
-    h = dict(_HEADERS)
-    if extra_headers:
-        h.update(extra_headers)
-    req = urllib.request.Request(url, headers=h)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except Exception as e:
-        raise ConnectionError(str(e))
 
 def _sane(name, value):
-    lo, hi = _SANE_RANGES.get(name, (0, 1e9))
-    return lo <= value <= hi
+    lo, hi = _SANE.get(name, (0, 1e12))
+    return lo <= float(value) <= hi
 
-# ── SOURCE 1: YAHOO FINANCE JSON API ─────────────────────────────────────────
+def _get(url, timeout=15, extra=None):
+    h = dict(_HEADERS)
+    if extra:
+        h.update(extra)
+    req = urllib.request.Request(url, headers=h)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
 
-def _yahoo_live(name):
-    """
-    Hits Yahoo's chart endpoint with interval=1m&range=1d.
-    Returns regularMarketPrice — this is the true current price,
-    not a stale session close.
-    """
-    yahoo_ticker = TICKER_MAP[name][0]
+
+# ── SOURCE 1: yfinance ────────────────────────────────────────────────────────
+
+def _yfinance_live(name):
+    """Use yfinance library — handles Yahoo cookie auth internally."""
+    import yfinance as yf
+    ticker_sym = TICKER_MAP[name][0]
+    t = yf.Ticker(ticker_sym)
+    info = t.fast_info
+    price = getattr(info, "last_price", None)
+    if price is None:
+        # fallback within yfinance: use previous_close
+        price = getattr(info, "previous_close", None)
+    if price is None or not _sane(name, price):
+        raise ValueError(f"yfinance returned invalid price {price} for {name}")
+    return float(price), datetime.datetime.now(), "yfinance (Yahoo Finance)"
+
+
+def _yfinance_history(name, days):
+    """Fetch real daily OHLC history via yfinance."""
+    import yfinance as yf
+    ticker_sym = TICKER_MAP[name][0]
+    # Add buffer for weekends/holidays
+    period_days = days + 30
+    if period_days <= 30:
+        period = "1mo"
+    elif period_days <= 90:
+        period = "3mo"
+    elif period_days <= 180:
+        period = "6mo"
+    elif period_days <= 365:
+        period = "1y"
+    else:
+        period = "2y"
+    t   = yf.Ticker(ticker_sym)
+    df  = t.history(period=period, interval="1d", auto_adjust=True)
+    if df is None or df.empty:
+        raise ValueError(f"yfinance returned empty history for {name}")
+    rows = []
+    for idx, row in df.iterrows():
+        date_str = str(idx.date())
+        close    = float(row["Close"])
+        if _sane(name, close):
+            rows.append({"date": date_str, "price": round(close, 4)})
+    if len(rows) < 5:
+        raise ValueError(f"yfinance history too short for {name}: {len(rows)} rows")
+    return rows[-days:]
+
+
+# ── SOURCE 2: Yahoo Finance v8 JSON (direct, no library) ─────────────────────
+
+def _yahoo_v8_live(name):
+    ticker = TICKER_MAP[name][1]
     url = (
         "https://query1.finance.yahoo.com/v8/finance/chart/"
-        "{}?interval=1m&range=1d&includePrePost=false".format(
-            urllib.request.quote(yahoo_ticker)
-        )
+        f"{urllib.request.quote(ticker)}?interval=1m&range=1d&includePrePost=false"
     )
-    raw = _get(url, extra_headers={"Accept": "application/json"})
+    raw  = _get(url, extra={"Referer": "https://finance.yahoo.com/"})
     data = json.loads(raw)
-    result = data["chart"]["result"][0]
-    meta = result["meta"]
-
-    # regularMarketPrice is always the live current price
+    meta = data["chart"]["result"][0]["meta"]
     price = meta.get("regularMarketPrice")
     ts    = meta.get("regularMarketTime", 0)
     dt    = datetime.datetime.fromtimestamp(ts) if ts else None
-
-    if price is None:
-        raise ValueError("No regularMarketPrice in Yahoo response")
-    price = float(price)
-    if not _sane(name, price):
-        raise ValueError("Yahoo price {:.4f} out of sane range for {}".format(price, name))
-    return price, dt, "Yahoo Finance (live)"
+    if price is None or not _sane(name, float(price)):
+        raise ValueError(f"Yahoo v8 invalid price {price} for {name}")
+    return float(price), dt, "Yahoo Finance v8"
 
 
-# ── SOURCE 2: STOOQ LIVE QUOTE ────────────────────────────────────────────────
+def _yahoo_v8_history(name, days):
+    ticker = TICKER_MAP[name][1]
+    end_ts   = int(datetime.datetime.now().timestamp())
+    start_ts = int((datetime.datetime.now() - datetime.timedelta(days=days + 30)).timestamp())
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{urllib.request.quote(ticker)}"
+        f"?interval=1d&period1={start_ts}&period2={end_ts}"
+    )
+    raw  = _get(url, extra={"Referer": "https://finance.yahoo.com/"})
+    data = json.loads(raw)
+    result    = data["chart"]["result"][0]
+    timestamps = result.get("timestamp", [])
+    closes     = result["indicators"]["quote"][0].get("close", [])
+    rows = []
+    for ts, c in zip(timestamps, closes):
+        if c is None:
+            continue
+        date_str = str(datetime.datetime.fromtimestamp(ts).date())
+        if _sane(name, float(c)):
+            rows.append({"date": date_str, "price": round(float(c), 4)})
+    if len(rows) < 5:
+        raise ValueError(f"Yahoo v8 history too short for {name}")
+    return rows[-days:]
 
-def _stooq_live(name):
-    """
-    Stooq's quote page returns a simple CSV with the latest price.
-    More reliable than yfinance for futures rolls.
-    """
-    stooq_ticker = TICKER_MAP[name][1]
-    if stooq_ticker is None:
-        raise ValueError("No stooq ticker for {}".format(name))
-    url = "https://stooq.com/q/l/?s={}&f=sd2t2ohlcv&h&e=csv".format(stooq_ticker)
-    raw = _get(url)
-    lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
-    # Header: Symbol,Date,Time,Open,High,Low,Close,Volume
-    if len(lines) < 2:
-        raise ValueError("Stooq returned no data for {}".format(name))
-    parts = lines[1].split(",")
-    if len(parts) < 7:
-        raise ValueError("Stooq bad CSV format for {}".format(name))
-    close = float(parts[6])
-    date_str = parts[1]
-    dt = datetime.datetime.strptime(date_str, "%Y-%m-%d") if date_str else None
-    if not _sane(name, close):
-        raise ValueError("Stooq price {:.4f} out of sane range for {}".format(close, name))
-    return close, dt, "Stooq (daily close)"
 
-
-# ── SOURCE 3: FRED API ────────────────────────────────────────────────────────
+# ── SOURCE 3: FRED CSV ────────────────────────────────────────────────────────
 
 def _fred_live(name):
-    """
-    FRED (St. Louis Fed) provides daily spot prices for WTI, Brent, VIX, DXY.
-    No API key required for public series. Returns latest observation.
-    """
     series = TICKER_MAP[name][2]
     if series is None:
-        raise ValueError("No FRED series for {}".format(name))
+        raise ValueError(f"No FRED series for {name}")
     url = (
         "https://fred.stlouisfed.org/graph/fredgraph.csv"
-        "?id={}&vintage_date={}".format(series, datetime.date.today())
+        f"?id={series}&vintage_date={datetime.date.today()}"
     )
-    raw = _get(url)
+    raw   = _get(url)
     lines = [l.strip() for l in raw.strip().splitlines() if l.strip()]
-    # Last non-"." row
     for line in reversed(lines[1:]):
         parts = line.split(",")
         if len(parts) == 2 and parts[1] not in (".", ""):
             try:
                 price = float(parts[1])
-                dt = datetime.datetime.strptime(parts[0], "%Y-%m-%d")
-                if not _sane(name, price):
-                    raise ValueError("FRED price {:.4f} out of sane range".format(price))
-                return price, dt, "FRED (St. Louis Fed)"
+                dt    = datetime.datetime.strptime(parts[0], "%Y-%m-%d")
+                if _sane(name, price):
+                    return price, dt, "FRED (St. Louis Fed)"
             except ValueError:
                 continue
-    raise ValueError("FRED returned no valid price for {}".format(name))
+    raise ValueError(f"FRED returned no valid price for {name}")
 
 
-# ── SOURCE 4: BARCHART HTML SCRAPE ───────────────────────────────────────────
+# ── SYNTHETIC FALLBACK (clearly flagged) ──────────────────────────────────────
 
-def _barchart_live(name):
+def _synthetic_history(name, days, send=print):
     """
-    Scrapes Barchart's futures quote page for the last price.
-    Barchart shows 10-min delayed quotes for free.
+    Last-resort random walk. Always logs a loud warning — never silent.
+    The returned rows include a 'synthetic': True flag so the UI can warn the user.
     """
-    slug = TICKER_MAP[name][3]
-    if slug is None:
-        raise ValueError("No Barchart slug for {}".format(name))
-    url = "https://www.barchart.com/futures/quotes/{}*0/overview".format(slug)
-    raw = _get(url)
-    # Look for lastPrice in their JSON data blob
-    m = re.search(r'"lastPrice"\s*:\s*"?([\d.]+)"?', raw)
-    if not m:
-        # Try og:description meta tag which often has the price
-        m = re.search(r'<meta[^>]+og:description[^>]+content="[^"]*?([\d]+\.[\d]+)[^"]*"', raw)
-    if not m:
-        raise ValueError("Could not parse Barchart price for {}".format(name))
-    price = float(m.group(1))
-    if not _sane(name, price):
-        raise ValueError("Barchart price {:.4f} out of sane range".format(price))
-    return price, datetime.datetime.now(), "Barchart (10min delayed)"
-
-
-# ── HISTORY: STOOQ 90-DAY CSV ────────────────────────────────────────────────
-
-def fetch_history(name, days=90):
-    """
-    Fetch daily OHLC history from Stooq.
-    Returns list of {"date": "YYYY-MM-DD", "price": float}.
-    Falls back to synthetic series if all sources fail.
-    """
-    stooq_ticker = TICKER_MAP[name][1]
-    if stooq_ticker is None:
-        return _synthetic_history(name, days)
-
-    end   = datetime.date.today()
-    start = end - datetime.timedelta(days=days + 20)  # buffer for weekends
-    url = (
-        "https://stooq.com/q/d/l/?s={}&d1={}&d2={}&i=d".format(
-            stooq_ticker,
-            start.strftime("%Y%m%d"),
-            end.strftime("%Y%m%d"),
-        )
-    )
-    try:
-        raw = _get(url)
-        lines = raw.strip().splitlines()
-        rows = []
-        for line in lines[1:]:
-            parts = line.split(",")
-            if len(parts) >= 5:
-                try:
-                    price = float(parts[4])  # Close
-                    if _sane(name, price):
-                        rows.append({"date": parts[0], "price": round(price, 4)})
-                except (ValueError, IndexError):
-                    pass
-        if len(rows) >= 10:
-            return rows[-days:]
-    except Exception as e:
-        pass  # fall through to synthetic
-
-    return _synthetic_history(name, days)
-
-
-def _synthetic_history(name, days):
-    """Last-resort synthetic history centered on a reasonable base price."""
     import numpy as np
-    bases = {"HO": 3.80, "WTI": 97.0, "Brent": 102.0,
-             "RBOB": 3.20, "DXY": 103.5, "VIX": 25.0}
+    send(f"  *** WARNING: Using SYNTHETIC (fake) history for {name}. "
+         f"All sources failed. Data is NOT real. ***")
+    bases = {"HO": 3.50, "WTI": 75.0, "Brent": 79.0,
+             "RBOB": 2.40, "DXY": 103.5, "VIX": 18.0}
+    vols  = {"HO": 0.012, "WTI": 0.010, "Brent": 0.010,
+             "RBOB": 0.012, "DXY": 0.004, "VIX": 0.025}
     base  = bases.get(name, 50.0)
-    vol   = {"HO": 0.018, "WTI": 0.014, "Brent": 0.013,
-             "RBOB": 0.018, "DXY": 0.004, "VIX": 0.035}.get(name, 0.012)
-
-    end = datetime.date.today()
+    vol   = vols.get(name, 0.010)
+    rng   = np.random.default_rng(seed=int(datetime.date.today().strftime("%Y%m%d")))
+    end   = datetime.date.today()
     rows, price = [], base
     for i in range(days + 30, -1, -1):
         d = end - datetime.timedelta(days=i)
         if d.weekday() < 5:
-            price = max(0.1, price * (1 + float(np.random.normal(0, vol))))
-            rows.append({"date": str(d), "price": round(price, 4)})
+            price = max(0.5, price * (1 + float(rng.normal(0, vol))))
+            rows.append({"date": str(d), "price": round(price, 4), "synthetic": True})
     return rows[-days:]
 
 
@@ -254,41 +214,59 @@ def _synthetic_history(name, days):
 
 def fetch_price(name, send=print):
     """
-    Waterfall: try each source in order, return first valid result.
-    Returns (price, datetime_or_None, source_name).
-    Raises RuntimeError only if ALL sources fail.
+    Try each live source in order. Return (price, dt, source_label).
+    Raises RuntimeError if all sources fail.
     """
     sources = [
-        ("Yahoo Finance",  _yahoo_live),
-        ("Stooq",          _stooq_live),
-        ("FRED",           _fred_live),
-        ("Barchart",       _barchart_live),
+        ("yfinance",      _yfinance_live),
+        ("Yahoo v8",      _yahoo_v8_live),
+        ("FRED",          _fred_live),
     ]
     errors = []
-    for source_name, fn in sources:
+    for label, fn in sources:
         try:
-            price, dt, label = fn(name)
-            age = ""
-            if dt:
-                delta = datetime.datetime.now() - dt
-                age = " | age: {}".format(_fmt_age(delta))
-            send("  ✓ {} = {:.4f}  [{}{}]".format(name, price, label, age))
-            return price, dt, label
+            price, dt, src = fn(name)
+            age = _fmt_age(datetime.datetime.now() - dt) if dt else "?"
+            send(f"  OK {name} = {price:.4f}  [{src} | age: {age}]")
+            return price, dt, src
         except Exception as e:
-            errors.append("  {} → {}".format(source_name, e))
-            time.sleep(0.3)
+            errors.append(f"    {label}: {e}")
+            time.sleep(0.2)
 
-    # All failed — log errors and raise
-    send("  ✗ ALL sources failed for {}:".format(name))
+    send(f"  FAILED all sources for {name}:")
     for err in errors:
         send(err)
-    raise RuntimeError("Could not fetch price for {} from any source".format(name))
+    raise RuntimeError(f"Could not fetch live price for {name}")
 
 
-def fetch_all(names=None, send=print, history_days=90):
+def fetch_history(name, days=365, send=print):
     """
-    Fetch live prices + history for all requested tickers.
-    Returns dict: name -> {"current", "dt", "source", "history", "returns"}
+    Try each history source in order.
+    Returns list of {date, price} dicts, newest last.
+    Falls back to synthetic with loud warning if all fail.
+    """
+    sources = [
+        ("yfinance history",   lambda: _yfinance_history(name, days)),
+        ("Yahoo v8 history",   lambda: _yahoo_v8_history(name, days)),
+    ]
+    for label, fn in sources:
+        try:
+            rows = fn()
+            send(f"  History {name}: {len(rows)} pts via {label} "
+                 f"({rows[0]['date']} → {rows[-1]['date']})")
+            return rows
+        except Exception as e:
+            send(f"  History {label} failed for {name}: {e}")
+            time.sleep(0.2)
+
+    # All real sources failed — use synthetic but flag it clearly
+    return _synthetic_history(name, days, send=send)
+
+
+def fetch_all(names=None, send=print, history_days=365):
+    """
+    Fetch live prices + history for all tickers.
+    Returns dict: name -> {current, dt, source, history, returns, is_synthetic}
     """
     import numpy as np
 
@@ -296,60 +274,59 @@ def fetch_all(names=None, send=print, history_days=90):
         names = list(TICKER_MAP.keys())
 
     result = {}
-    send("Fetching live prices (waterfall) ...")
+    send("Fetching live prices ...")
 
     for name in names:
         if name not in TICKER_MAP:
-            send("  [SKIP] Unknown ticker: {}".format(name))
+            send(f"  [SKIP] Unknown ticker: {name}")
             continue
         try:
             price, dt, source = fetch_price(name, send=send)
-            history = fetch_history(name, days=history_days)
-
-            # Override last history point with the live price so charts are current
-            if history:
-                today_str = str(datetime.date.today())
-                if history[-1]["date"] == today_str:
-                    history[-1]["price"] = price
-                else:
-                    history.append({"date": today_str, "price": price})
-
-            closes = [r["price"] for r in history]
-            returns = list(np.diff(np.log(closes))) if len(closes) > 1 else []
-
-            result[name] = {
-                "current": price,
-                "dt":      dt,
-                "source":  source,
-                "history": history,
-                "returns": returns,
-            }
         except RuntimeError as e:
-            send("  [WARN] Skipping {}: {}".format(name, e))
+            send(f"  [WARN] Skipping {name}: {e}")
+            continue
+
+        history = fetch_history(name, days=history_days, send=send)
+        is_synthetic = any(r.get("synthetic") for r in history)
+
+        # Pin today's live price as the last data point
+        today_str = str(datetime.date.today())
+        if history and history[-1]["date"] == today_str:
+            history[-1]["price"] = price
+        else:
+            history.append({"date": today_str, "price": price})
+
+        closes  = [r["price"] for r in history]
+        returns = list(np.diff(np.log(closes))) if len(closes) > 1 else []
+
+        result[name] = {
+            "current":      price,
+            "dt":           dt,
+            "source":       source,
+            "history":      history,
+            "returns":      returns,
+            "is_synthetic": is_synthetic,
+        }
 
     return result
 
 
 def _fmt_age(delta):
     secs = int(delta.total_seconds())
-    if secs < 0:
-        return "unknown"
-    if secs < 60:
-        return "{}s".format(secs)
-    if secs < 3600:
-        return "{}m".format(secs // 60)
-    if secs < 86400:
-        return "{}h".format(secs // 3600)
-    return "{}d".format(secs // 86400)
+    if secs < 0:   return "unknown"
+    if secs < 60:  return f"{secs}s"
+    if secs < 3600: return f"{secs//60}m"
+    if secs < 86400: return f"{secs//3600}h"
+    return f"{secs//86400}d"
 
 
 # ── CLI TEST ──────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    print("Testing data waterfall — {}\n".format(datetime.datetime.now()))
-    data = fetch_all()
+    print(f"Testing data fetcher — {datetime.datetime.now()}\n")
+    data = fetch_all(["HO", "WTI"])
     print("\n--- SUMMARY ---")
     for name, d in data.items():
+        synth = " *** SYNTHETIC ***" if d["is_synthetic"] else ""
         dt_str = d["dt"].strftime("%Y-%m-%d %H:%M") if d["dt"] else "?"
-        print("  {:8s}  {:>10.4f}  {}  [{}]  history={}pts".format(
-            name, d["current"], dt_str, d["source"], len(d["history"])))
+        print(f"  {name:8s}  {d['current']:>10.4f}  {dt_str}  [{d['source']}]  "
+              f"history={len(d['history'])}pts{synth}")
