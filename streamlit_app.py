@@ -17,7 +17,8 @@ import os
 # Load .env if present (local dev)
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    load_dotenv(dotenv_path=_env_path, override=True)
 except ImportError:
     pass
 
