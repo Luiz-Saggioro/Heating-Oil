@@ -1,6 +1,7 @@
 """
 Energy Intelligence Dashboard — Streamlit Edition
-Runs on Streamlit Cloud (free tier) at streamlit.io
+HO + WTI/Oil. All emojis removed from UI labels.
+Security: rate-limiting, input sanitization, env-var secrets.
 """
 
 import streamlit as st
@@ -11,11 +12,21 @@ import plotly.express as px
 import plotly.io as pio
 from plotly.subplots import make_subplots
 import datetime
+import os
+
+# Load .env if present (local dev)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from security import limiter, sanitize_str, validate_enum, security_audit_report
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Energy Intelligence Dashboard",
-    page_icon="⚡",
+    page_icon="energy",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -24,1031 +35,727 @@ st.set_page_config(
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@600;700;800&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Syne', sans-serif;
-}
-code, .stCode, pre {
-    font-family: 'JetBrains Mono', monospace !important;
-}
-
-/* Dark background override */
-.stApp { background: #07090f !important; }
-
-/* Plotly chart iframes - this is the key fix for white chart backgrounds */
-.stPlotlyChart { background: #07090f !important; }
-.stPlotlyChart > div { background: #07090f !important; }
-.stPlotlyChart iframe { background: #07090f !important; }
-div[data-testid="stPlotlyChart"] { background: #07090f !important; }
-div[data-testid="stPlotlyChart"] > div { background: #07090f !important; }
-
-/* Block containers */
-div[data-testid="block-container"] { background: #07090f !important; }
-div[data-testid="stVerticalBlock"] { background: #07090f !important; }
-div[data-testid="column"] { background: #07090f !important; }
-
-/* Remove any white card backgrounds Streamlit adds */
-div[data-testid="stHorizontalBlock"] { background: #07090f !important; }
-.element-container { background: transparent !important; }
-
-.stApp { background: #07090f; }
-section[data-testid="stSidebar"] { background: #0a0e18; border-right: 1px solid #1a2540; }
-section[data-testid="stSidebar"] .stMarkdown { color: #c8d8ec; }
-
-/* Metric cards */
-div[data-testid="metric-container"] {
-    background: #07090f;
-    border: 1px solid #1a2540;
-    border-radius: 8px;
-    padding: 12px 16px;
-    transition: border-color .2s;
-}
-div[data-testid="metric-container"]:hover { border-color: #243660; }
-div[data-testid="metric-container"] label {
-    color: #4a6080 !important;
-    font-family: 'JetBrains Mono', monospace !important;
-    font-size: 9px !important;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-}
-div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-    color: #c8d8ec !important;
-    font-family: 'JetBrains Mono', monospace !important;
-}
-
-/* Section headers */
-h1, h2, h3 { font-family: 'Syne', sans-serif !important; color: #c8d8ec !important; }
-
-/* Buttons */
-.stButton > button {
-    background: linear-gradient(90deg, #f5a623, #d4850e);
-    color: #000;
-    border: none;
-    border-radius: 6px;
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 700;
-    letter-spacing: .5px;
-    transition: opacity .15s;
-}
-.stButton > button:hover { opacity: .85; }
-
-/* Selectbox, radio */
-.stSelectbox, .stRadio { color: #c8d8ec; }
-.stSelectbox > div > div { background: #07090f; border-color: #1a2540; color: #c8d8ec; }
-
-/* Dividers */
-hr { border-color: #1a2540; }
-
-/* Status box */
-.status-box {
-    background: #07090f;
-    border: 1px solid #1a2540;
-    border-radius: 8px;
-    padding: 12px 16px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
-    color: #4a6080;
-    line-height: 1.8;
-    white-space: pre;
-    overflow-x: auto;
-}
-
-/* Section badge */
-.sec-badge {
-    display: inline-block;
-    background: #0d1220;
-    border: 1px solid #243660;
-    border-radius: 4px;
-    padding: 3px 10px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 9px;
-    color: #4a6080;
-    text-transform: uppercase;
-    letter-spacing: 1.5px;
-    margin-bottom: 8px;
-}
-
-/* Plotly chart containers */
-.js-plotly-plot { border-radius: 8px; }
+html,body,[class*="css"]{font-family:'Syne',sans-serif;}
+code,.stCode,pre{font-family:'JetBrains Mono',monospace!important;}
+.stApp{background:#07090f!important;}
+.stPlotlyChart{background:#07090f!important;}
+.stPlotlyChart>div{background:#07090f!important;}
+div[data-testid="stPlotlyChart"]{background:#07090f!important;}
+div[data-testid="block-container"]{background:#07090f!important;}
+div[data-testid="stVerticalBlock"]{background:#07090f!important;}
+div[data-testid="column"]{background:#07090f!important;}
+div[data-testid="stHorizontalBlock"]{background:#07090f!important;}
+.element-container{background:transparent!important;}
+section[data-testid="stSidebar"]{background:#0a0e18;border-right:1px solid #1a2540;}
+section[data-testid="stSidebar"] .stMarkdown{color:#c8d8ec;}
+div[data-testid="metric-container"]{background:#07090f;border:1px solid #1a2540;border-radius:8px;padding:12px 16px;transition:border-color .2s;}
+div[data-testid="metric-container"]:hover{border-color:#243660;}
+div[data-testid="metric-container"] label{color:#4a6080!important;font-family:'JetBrains Mono',monospace!important;font-size:9px!important;text-transform:uppercase;letter-spacing:1px;}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"]{color:#c8d8ec!important;font-family:'JetBrains Mono',monospace!important;}
+h1,h2,h3{font-family:'Syne',sans-serif!important;color:#c8d8ec!important;}
+.stButton>button{background:linear-gradient(90deg,#f5a623,#d4850e);color:#000;border:none;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.5px;transition:opacity .15s;}
+.stButton>button:hover{opacity:.85;}
+.stSelectbox,.stRadio{color:#c8d8ec;}
+.stSelectbox>div>div{background:#07090f;border-color:#1a2540;color:#c8d8ec;}
+hr{border-color:#1a2540;}
+.status-box{background:#07090f;border:1px solid #1a2540;border-radius:8px;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#4a6080;line-height:1.8;white-space:pre;overflow-x:auto;}
+.js-plotly-plot{border-radius:8px;}
 </style>
 """, unsafe_allow_html=True)
 
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
-_tmpl_obj = go.layout.Template(
-    layout=go.Layout(
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f",
-        font=dict(family="JetBrains Mono, monospace", color="#4a6080", size=10),
-        colorway=["#00d4ff", "#f5a623", "#1df5a0", "#ff3d5a", "#9d7aff", "#ffd060"],
-        xaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
-        yaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
-        legend=dict(bgcolor="rgba(7,9,15,.85)", bordercolor="#1a2540", borderwidth=1),
-        margin=dict(l=50, r=20, t=40, b=40),
-    )
-)
-pio.templates["energy_dark"] = _tmpl_obj
+_tmpl = go.layout.Template(layout=go.Layout(
+    paper_bgcolor="#07090f", plot_bgcolor="#07090f",
+    font=dict(family="JetBrains Mono, monospace", color="#4a6080", size=10),
+    colorway=["#00d4ff","#f5a623","#1df5a0","#ff3d5a","#9d7aff","#ffd060"],
+    xaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
+    yaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
+    legend=dict(bgcolor="rgba(7,9,15,.85)", bordercolor="#1a2540", borderwidth=1),
+    margin=dict(l=50,r=20,t=40,b=40),
+))
+pio.templates["energy_dark"] = _tmpl
 pio.templates.default = "plotly_dark+energy_dark"
-PLOTLY_TEMPLATE = "plotly_dark+energy_dark"
-
-SCEN_COLORS = ["#00d4ff", "#ffd060", "#ff6b35", "#ff3d5a", "#9d7aff"]
-HORIZONS    = ["1M", "3M", "6M", "9M", "12M"]
-
+PT = "plotly_dark+energy_dark"
+SCEN_COLORS = ["#00d4ff","#ffd060","#ff6b35","#ff3d5a","#9d7aff"]
+HORIZONS    = ["1M","3M","6M","9M","12M"]
+_PCFG = {"displayModeBar":False,"displaylogo":False}
 
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 def init_state():
-    defaults = {
-        "result": None,
-        "agent": None,
-        "sel_horizon": "1M",
-        "sel_bin": None,
-        "sel_scenario": None,
-        "sel_region": None,
-        "sel_driver": None,
-        "log": [],
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
+    defs = dict(result=None,agent=None,sel_horizon="1M",sel_bin=None,
+                sel_scenario=None,sel_region=None,sel_driver=None,log=[])
+    for k,v in defs.items():
+        if k not in st.session_state: st.session_state[k]=v
 init_state()
 
-
-# ── AGENT RUNNER ──────────────────────────────────────────────────────────────
+# ── AGENT RUNNERS (cached) ────────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
 def run_oil_agent():
     import oil_agent_v2 as oil
-    msgs = []
-    def capture(m): msgs.append(str(m))
-    result = oil.run(send=capture)
+    msgs=[]
+    result=oil.run(send=msgs.append)
     return result, msgs
 
 @st.cache_data(ttl=300, show_spinner=False)
 def run_ho_agent():
     import ho_agent as ho
-    msgs = []
-    def capture(m): msgs.append(str(m))
-    result = ho.run(send=capture)
+    msgs=[]
+    result=ho.run(send=msgs.append)
     return result, msgs
 
-
 # ── HELPERS ───────────────────────────────────────────────────────────────────
-def section(icon, title, hint=""):
+def section(num, title, hint=""):
     st.markdown(f"""
     <div style="margin-top:28px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #1a2540;
                 display:flex;align-items:center;justify-content:space-between">
       <span style="font-size:12px;font-weight:700;color:#4a6080;text-transform:uppercase;letter-spacing:1.8px">
-        {icon} {title}
+        {num} {title}
       </span>
       <span style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace">{hint}</span>
     </div>""", unsafe_allow_html=True)
 
 def next_biz_days(n):
-    dates, d = [], datetime.date.today()
-    while len(dates) < n:
-        d += datetime.timedelta(days=1)
-        if d.weekday() < 5:
-            dates.append(str(d))
+    dates,d=[],datetime.date.today()
+    while len(dates)<n:
+        d+=datetime.timedelta(days=1)
+        if d.weekday()<5: dates.append(str(d))
     return dates
 
-def interp_line(start, end, n):
-    return [round(start + (end - start) * (i+1)/n, 5) for i in range(n)]
+def interp_line(start,end,n):
+    return [round(start+(end-start)*(i+1)/n,5) for i in range(n)]
+
+def _pc(key): return f"chart_{key}"
+
+# ── ① SNAPSHOT (renamed from KPI Snapshot; no Retail/Margin for HO) ──────────
+def render_snapshot(result, agent):
+    section("01", "SNAPSHOT")
+    ho = agent=="ho"
+    md = result.get("market_data",{})
+    f  = result.get("forecast",{})
+    ci = result.get("ci_bands",{})
+    ci1m = ci.get("1M",{})
+
+    if ho:
+        cols = st.columns(5)
+        metrics = [
+            ("HO Price",          f"${md.get('HO',0):.4f}",       "$/gal"),
+            ("WTI",               f"${md.get('WTI',0):.2f}",       "$/bbl"),
+            ("RBOB",              f"${md.get('RBOB',0):.4f}",      "$/gal"),
+            ("Crack Spread",      f"${md.get('crack_spread',0):.2f}","$/bbl"),
+            ("Volatility (VIX)",  f"{md.get('VIX',0):.1f}",        "index"),
+        ]
+    else:
+        cols = st.columns(5)
+        metrics = [
+            ("WTI Live",      f"${f.get('current_wti',0):.2f}",         "per barrel"),
+            ("Brent",         f"${result.get('brent',0):.2f}",           "per barrel"),
+            ("1-Wk Forecast", f"${f.get('forecast_low',0)}–${f.get('forecast_high',0)}","90% CI"),
+            ("Ann. Vol",      f"{f.get('annualised_vol',0):.1f}%",       "historical sigma"),
+            ("Direction",     f.get('direction','—'),                    "model signal"),
+        ]
+    for col,(label,val,sub) in zip(cols,metrics):
+        col.metric(label,val,sub)
+
+    ci_width = round((ci1m.get("ci95",[0,0])[1]-ci1m.get("ci95",[0,0])[0]),4 if ho else 2)
+    regime_label = result.get("regime","—") if ho else f.get("direction","—")
+    st.caption(f"1M 95% CI range: **${ci_width}** · Regime: **{regime_label}**")
 
 
-# ── CHART BUILDERS ────────────────────────────────────────────────────────────
-
-def chart_price_ci(data, agent):
-    """Price history + multi-band CI forecast — zoomable, pannable."""
-    ho  = agent == "ho"
-    md  = data.get("market_data", {})
-    f   = data.get("forecast", {})
-    cib = data.get("ci_bands", {})
-    spot = md.get("HO", data.get("ho_price", 3.5)) if ho else f.get("current_wti", data.get("wti", 80))
-
-    hist   = data.get("history", [])
-    labels = [r["date"] for r in hist]
-    prices = [float(r["price"]) for r in hist]
-    if len(prices) < 2:
+# ── ② PRICE HISTORY ──────────────────────────────────────────────────────────
+def render_price_history(result, agent):
+    """Price history with NO prediction cone (removed as per doc).
+    Y-axis range: 1.5–5.0 for HO. Time-period selector added."""
+    section("02", "PRICE HISTORY", "Select time period below")
+    ho   = agent=="ho"
+    hist = result.get("history",[])
+    if len(hist)<2:
         st.info("Not enough history data yet.")
         return
 
-    maN = 20 if ho else 7
-    ma  = [np.mean(prices[max(0,i-maN+1):i+1]) if i>=maN-1 else None for i in range(len(prices))]
+    # Time-period filter (sanitized)
+    period_opts = ["1 Week","1 Month","3 Months","6 Months","1 Year","All"]
+    period = st.radio("Period", period_opts, horizontal=True, index=2,
+                      key="period_radio")
+    period_s = sanitize_str(period)
+    try: validate_enum(period_s, set(period_opts))
+    except ValueError: period_s = "3 Months"
 
-    fc_n     = 14 if ho else 5
-    fc_dates = next_biz_days(fc_n)
-    ci1m     = cib.get("1M", {})
-    fc_mid   = interp_line(spot, ci1m.get("mid", spot), fc_n)
-    fc_l80   = interp_line(spot, ci1m.get("ci80", [spot,spot])[0], fc_n)
-    fc_h80   = interp_line(spot, ci1m.get("ci80", [spot,spot])[1], fc_n)
-    fc_l95   = interp_line(spot, ci1m.get("ci95", [spot,spot])[0], fc_n)
-    fc_h95   = interp_line(spot, ci1m.get("ci95", [spot,spot])[1], fc_n)
+    cutoff_map = {"1 Week":7,"1 Month":30,"3 Months":90,"6 Months":180,"1 Year":365,"All":99999}
+    cutoff_days = cutoff_map.get(period_s, 90)
+    cutoff_date = datetime.date.today() - datetime.timedelta(days=cutoff_days)
 
-    all_dates = labels + fc_dates
-    pad_none  = [None] * (len(labels) + 1)
+    filtered = [r for r in hist if str(r["date"])>=str(cutoff_date)]
+    if len(filtered)<2: filtered = hist[-10:]
 
-    color = "#f5a623" if ho else "#00d4ff"
-    fig   = go.Figure()
+    labels  = [r["date"] for r in filtered]
+    prices  = [float(r["price"]) for r in filtered]
+    maN     = min(20, len(prices)//2) if ho else min(7, len(prices)//2)
+    ma      = [np.mean(prices[max(0,i-maN+1):i+1]) if i>=maN-1 else None for i in range(len(prices))]
+    color   = "#f5a623" if ho else "#00d4ff"
 
-    # 95% CI fill
-    fig.add_trace(go.Scatter(
-        x=all_dates, y=pad_none + fc_h95, name="95% CI Hi",
-        line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    fig.add_trace(go.Scatter(
-        x=all_dates, y=pad_none + fc_l95, name="95% CI",
-        fill="tonexty", fillcolor="rgba(29,245,160,.08)",
-        line=dict(width=0), hoverinfo="skip"))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=labels,y=prices,name="Price",
+        line=dict(color=color,width=2),
+        fill="tozeroy",fillcolor=f"rgba({'245,166,35' if ho else '0,212,255'},.06)"))
+    fig.add_trace(go.Scatter(x=labels,y=ma,name=f"{maN}d MA",
+        line=dict(color="#9d7aff",width=1.5,dash="dot")))
 
-    # 80% CI fill
-    fig.add_trace(go.Scatter(
-        x=all_dates, y=pad_none + fc_h80, name="80% CI Hi",
-        line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    fig.add_trace(go.Scatter(
-        x=all_dates, y=pad_none + fc_l80, name="80% CI",
-        fill="tonexty", fillcolor="rgba(29,245,160,.18)",
-        line=dict(width=0), hoverinfo="skip"))
-
-    # Forecast midpoint
-    fig.add_trace(go.Scatter(
-        x=all_dates, y=pad_none + fc_mid,
-        name="Forecast", line=dict(color="#1df5a0", width=2, dash="dash")))
-
-    # Price line
-    fig.add_trace(go.Scatter(
-        x=labels, y=prices,
-        name="Price", line=dict(color=color, width=2),
-        fill="tozeroy", fillcolor=f"rgba({'245,166,35' if ho else '0,212,255'},.06)"))
-
-    # MA
-    fig.add_trace(go.Scatter(
-        x=labels, y=ma, name=f"{maN}d MA",
-        line=dict(color="#9d7aff", width=1.5, dash="dot")))
-
-    # Vertical divider at today
-    fig.add_vline(x=labels[-1], line=dict(color="#2a3850", width=1, dash="dash"))
-    fig.add_annotation(x=labels[-1], y=1, yref="paper", text="TODAY",
-                        showarrow=False, font=dict(color="#2a3850", size=8))
-
-    fmt = "$.4f" if ho else "$.2f"
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f",
-        height=340,
-        title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — {'1-Year' if ho else '90-Day'} History + Multi-Band CI Forecast",
-                   font=dict(size=12, color="#c8d8ec")),
-        xaxis=dict(rangeslider=dict(visible=True, bgcolor="#07090f"), type="date"),
-        yaxis=dict(tickformat=fmt),
+    yrange = [1.5,5.0] if ho else None
+    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=340,
+        title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History",
+                   font=dict(size=12,color="#c8d8ec")),
+        xaxis=dict(rangeslider=dict(visible=True,bgcolor="#07090f"),type="date"),
+        yaxis=dict(tickformat="$.4f" if ho else "$.2f",range=yrange),
         hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_1")
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
+    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("price_hist"))
 
 
-def chart_prob_distribution(data, agent, sel_horizon, sel_bin):
-    """Probability bar chart — click triggers cross-filter."""
-    ho   = agent == "ho"
-    rows = data.get("prob_table", {}).get(sel_horizon, [])
-    if not rows:
-        return
+# ── ③ PROBABILITY DISTRIBUTION ───────────────────────────────────────────────
+def render_prob_dist(result, agent, sel_h, sel_bin):
+    section("03","PROBABILITY DISTRIBUTION","Horizon selector in sidebar")
+    ho   = agent=="ho"
+    c1,c2 = st.columns(2)
+    rows = result.get("prob_table",{}).get(sel_h,[])
+    if not rows: return
+
     bins  = [r[0] for r in rows]
-    probs = [round(r[1]*100, 2) for r in rows]
+    probs = [round(r[1]*100,2) for r in rows]
     maxP  = max(probs)
-
     colors = []
-    for b, p in zip(bins, probs):
-        if sel_bin and b == sel_bin:
-            colors.append("#00d4ff")
-        elif sel_bin:
-            colors.append("rgba(0,212,255,.2)")
-        elif p == maxP:
-            colors.append("#f5a623")
-        else:
-            colors.append("#00d4ff" if ho else "#f5a623")
+    for b,p in zip(bins,probs):
+        if sel_bin and b==sel_bin: colors.append("#00d4ff")
+        elif sel_bin:              colors.append("rgba(0,212,255,.2)")
+        elif p==maxP:              colors.append("#f5a623")
+        else:                      colors.append("#00d4ff" if ho else "#f5a623")
 
-    fig = go.Figure(go.Bar(
-        y=bins, x=probs, orientation="h",
-        marker_color=colors,
-        text=[f"{p:.1f}%" for p in probs],
-        textposition="outside",
-        hovertemplate="%{y}: %{x:.2f}%<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f",
-        height=360,
-        title=dict(text=f"Probability by Price Bin — {sel_horizon}", font=dict(size=11, color="#c8d8ec")),
-        xaxis=dict(title="Probability (%)", ticksuffix="%"),
-        yaxis=dict(autorange="reversed"),
-        bargap=0.15,
-        showlegend=False,
-    )
-    return fig
+    with c1:
+        fig=go.Figure(go.Bar(y=bins,x=probs,orientation="h",marker_color=colors,
+            text=[f"{p:.1f}%" for p in probs],textposition="outside",
+            hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=360,
+            title=dict(text=f"Probability by Price Bin — {sel_h}",font=dict(size=11,color="#c8d8ec")),
+            xaxis=dict(title="Probability (%)",ticksuffix="%"),
+            yaxis=dict(autorange="reversed"),bargap=0.15,showlegend=False)
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("prob_bar"))
+
+    with c2:
+        # CDF
+        cum=0; cdf=[]
+        for _,p in rows: cum+=p; cdf.append(round(cum*100,2))
+        fig=go.Figure(go.Scatter(x=bins,y=cdf,mode="lines+markers",
+            line=dict(color="#9d7aff",width=2),marker=dict(size=4,color="#9d7aff"),
+            fill="tozeroy",fillcolor="rgba(157,122,255,.07)",
+            hovertemplate="%{x}: P(<=) = %{y:.1f}%<extra></extra>"))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=360,
+            title=dict(text=f"Cumulative Distribution — {sel_h}",font=dict(size=11,color="#c8d8ec")),
+            yaxis=dict(title="Cumulative Probability (%)",ticksuffix="%",range=[0,100]),
+            xaxis=dict(title="Price Range"))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("cdf"))
+
+    # EV row
+    ev = result.get("ev_by_horizon",{})
+    if ev:
+        st.markdown("**Expected Value (EV) by Horizon** — probability-weighted average price")
+        ev_cols = st.columns(len(HORIZONS))
+        for col,h in zip(ev_cols,HORIZONS):
+            col.metric(h,f"${ev.get(h,0):.4f}" if ho else f"${ev.get(h,0):.2f}")
+
+    # Probability table
+    st.markdown("**Probability Table** — all horizons")
+    _render_prob_table(result, agent, sel_h, sel_bin)
+
+    # Log-normal shape (HO only)
+    if ho:
+        ls = result.get("lognorm_shape",{})
+        if ls:
+            st.markdown("**Log-Normal HO Price Distribution Shape (1M horizon)**")
+            c_a,c_b = st.columns([3,1])
+            with c_a:
+                fig=go.Figure()
+                fig.add_trace(go.Scatter(x=ls["x"],y=ls["y"],mode="lines",
+                    line=dict(color="#f5a623",width=2),fill="tozeroy",
+                    fillcolor="rgba(245,166,35,.10)",
+                    hovertemplate="Price: $%{x:.4f}<br>PDF: %{y:.5f}<extra></extra>"))
+                fig.add_vline(x=ls["mean"],  line=dict(color="#00d4ff",dash="dash",width=1.5),
+                              annotation_text=f"Mean ${ls['mean']:.4f}",
+                              annotation_font=dict(color="#00d4ff",size=9))
+                fig.add_vline(x=ls["median"],line=dict(color="#1df5a0",dash="dot",width=1.5),
+                              annotation_text=f"Median ${ls['median']:.4f}",
+                              annotation_font=dict(color="#1df5a0",size=9))
+                fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+                    title=dict(text="Log-Normal PDF — shape, skewness, kurtosis",font=dict(size=11,color="#c8d8ec")),
+                    xaxis=dict(title="HO Price ($/gal)"),yaxis=dict(title="Probability Density"),showlegend=False)
+                st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("lognorm"))
+            with c_b:
+                st.markdown("""<div style="padding:16px;background:#0d1220;border:1px solid #1a2540;border-radius:8px;
+                    font-family:'JetBrains Mono',monospace;font-size:11px;line-height:2;color:#c8d8ec">""",
+                    unsafe_allow_html=True)
+                st.metric("Mean",    f"${ls['mean']:.4f}")
+                st.metric("Median",  f"${ls['median']:.4f}")
+                st.metric("Skewness",f"{ls['skewness']:.3f}")
+                st.metric("Kurtosis",f"{ls['kurtosis']:.3f}")
+                st.markdown("</div>",unsafe_allow_html=True)
 
 
-def chart_cdf(data, sel_horizon):
-    """Cumulative distribution function."""
-    rows = data.get("prob_table", {}).get(sel_horizon, [])
-    if not rows:
-        return
-    bins  = [r[0] for r in rows]
-    probs = [r[1] for r in rows]
-    cdf   = []
-    cum   = 0
-    for p in probs:
-        cum += p
-        cdf.append(round(cum * 100, 2))
-
-    fig = go.Figure(go.Scatter(
-        x=bins, y=cdf,
-        mode="lines+markers",
-        line=dict(color="#9d7aff", width=2),
-        marker=dict(size=4, color="#9d7aff"),
-        fill="tozeroy", fillcolor="rgba(157,122,255,.07)",
-        hovertemplate="%{x}: P(≤) = %{y:.1f}%<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f",
-        height=360,
-        title=dict(text=f"Cumulative Distribution — {sel_horizon}", font=dict(size=11, color="#c8d8ec")),
-        yaxis=dict(title="Cumulative Probability (%)", ticksuffix="%", range=[0, 100]),
-        xaxis=dict(title="Price Range"),
-    )
-    return fig
-
-
-def chart_vol_heatmap(data):
-    """Rolling volatility heatmap as scatter/calendar."""
-    vh = data.get("vol_heatmap", [])
+# ── ④ VOLATILITY (line chart, y-axis 0–50, no histogram) ─────────────────────
+def render_volatility(result):
+    section("04","VOLATILITY","Rolling 10-day annualised vol — line chart")
+    vh = result.get("vol_heatmap",[])
     if not vh:
-        st.info("Insufficient history for volatility heatmap (need > 11 trading days)")
+        st.info("Insufficient history for volatility (need > 11 trading days)")
         return
 
-    df   = pd.DataFrame(vh)
-    df["date_dt"] = pd.to_datetime(df["date"])
-    df["week"]    = df["date_dt"].dt.isocalendar().week.astype(int)
-    df["weekday"] = df["date_dt"].dt.dayofweek
-    df["label"]   = df["date_dt"].dt.strftime("%b %d") + " — " + df["vol"].astype(str) + "% ann.vol"
-
-    fig = go.Figure(go.Scatter(
-        x=df["date"],
-        y=df["vol"],
-        mode="markers",
-        marker=dict(
-            size=10,
-            color=df["vol"],
-            colorscale=[[0, "#1df5a0"], [0.5, "#ffd060"], [1, "#ff3d5a"]],
-            showscale=True,
-            colorbar=dict(title="Ann. Vol %", ticksuffix="%", len=0.6),
-        ),
-        text=df["label"],
-        hovertemplate="%{text}<extra></extra>",
-    ))
-
-    # Add line connecting dots
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["vol"],
-        mode="lines",
-        line=dict(color="rgba(100,130,170,.3)", width=1),
-        showlegend=False, hoverinfo="skip"
-    ))
-
-    # Average line
+    df = pd.DataFrame(vh)
     avg = df["vol"].mean()
-    fig.add_hline(y=avg, line=dict(color="#ffd060", width=1, dash="dash"),
-                  annotation_text=f"Avg {avg:.1f}%",
-                  annotation_font=dict(color="#ffd060", size=9))
 
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f",
-        height=260,
-        title=dict(text="Rolling 10-Day Annualised Volatility", font=dict(size=11, color="#c8d8ec")),
-        xaxis=dict(title="", type="date"),
-        yaxis=dict(title="Ann. Vol (%)", ticksuffix="%"),
-        showlegend=False,
-    )
-    return fig
-
-
-def chart_vol_histogram(data):
-    """Histogram of daily vol levels."""
-    vh = data.get("vol_heatmap", [])
-    if not vh:
-        return
-    vols = [x["vol"] for x in vh]
-    fig  = go.Figure(go.Histogram(
-        x=vols, nbinsx=12,
-        marker_color="rgba(157,122,255,.7)",
-        hovertemplate="Vol: %{x:.1f}% — %{y} days<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=220,
-        title=dict(text="Vol Distribution", font=dict(size=10, color="#c8d8ec")),
-        xaxis=dict(title="Annualised Vol (%)", ticksuffix="%"),
-        yaxis=dict(title="Days"),
-        showlegend=False,
-    )
-    return fig
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines+markers",
+        line=dict(color="#f5a623" if result.get("agent")=="ho" else "#00d4ff",width=2),
+        marker=dict(size=4),name="Rolling 10d Ann. Vol",
+        hovertemplate="%{x}: %{y:.1f}%<extra></extra>"))
+    fig.add_hline(y=avg,line=dict(color="#ffd060",width=1,dash="dash"),
+        annotation_text=f"Avg {avg:.1f}%",annotation_font=dict(color="#ffd060",size=9))
+    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=280,
+        title=dict(text="Rolling 10-Day Annualised Volatility",font=dict(size=11,color="#c8d8ec")),
+        xaxis=dict(title="",type="date"),
+        yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[0,50]),
+        showlegend=False)
+    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
 
 
-def chart_drivers(data, agent, sel_driver):
-    """Driver / explainability bar chart."""
-    drivers = data.get("drivers", [])
-    if not drivers:
-        return
-    ho = agent == "ho"
-
+# ── ⑤ DRIVER ANALYSIS (rule-based, kept optional) ────────────────────────────
+def render_drivers(result, agent, sel_drv):
+    section("05","DRIVER ANALYSIS","Rule-based contribution weights")
+    drivers = result.get("drivers",[])
+    if not drivers: return
+    ho = agent=="ho"
     names  = [d["name"] for d in drivers]
     values = [d["pct"] for d in drivers]
-    colors = []
-    for d in drivers:
-        if sel_driver and d["name"] == sel_driver:
-            colors.append("#00d4ff")
-        elif sel_driver:
-            colors.append("rgba(0,212,255,.2)")
-        else:
-            colors.append("#f5a623" if ho else "#00d4ff")
+    colors = ["#00d4ff" if (sel_drv and d["name"]==sel_drv) else
+              ("rgba(0,212,255,.2)" if sel_drv else ("#f5a623" if ho else "#00d4ff"))
+              for d in drivers]
 
-    fig = go.Figure(go.Bar(
-        x=names, y=values,
-        marker_color=colors,
-        text=[f"{v:.1f}%" for v in values],
-        textposition="outside",
-        hovertemplate="%{x}: %{y:.1f}% weight<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=260,
-        title=dict(text="Price Driver Contribution (rule-based)", font=dict(size=11, color="#c8d8ec")),
-        yaxis=dict(title="Relative Weight (%)", ticksuffix="%"),
-        xaxis=dict(title=""),
-        showlegend=False, bargap=0.2,
-    )
-    return fig
+    c1,c2 = st.columns([2,1])
+    with c1:
+        fig=go.Figure(go.Bar(x=names,y=values,marker_color=colors,
+            text=[f"{v:.1f}%" for v in values],textposition="outside",
+            hovertemplate="%{x}: %{y:.1f}% weight<extra></extra>"))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+            title=dict(text="Price Driver Contribution (rule-based)",font=dict(size=11,color="#c8d8ec")),
+            yaxis=dict(title="Relative Weight (%)",ticksuffix="%"),
+            xaxis=dict(title=""),showlegend=False,bargap=0.2)
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("drivers"))
+    with c2:
+        DCOLS=["#00d4ff","#f5a623","#1df5a0","#ff3d5a","#9d7aff","#ffd060"]
+        pull=[0.12 if (sel_drv and d["name"]==sel_drv) else 0 for d in drivers]
+        fig=go.Figure(go.Pie(labels=names,values=values,hole=0.55,
+            marker_colors=DCOLS[:len(drivers)],pull=pull,
+            hovertemplate="%{label}: %{value:.1f}%<extra></extra>"))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+            title=dict(text="Driver Share",font=dict(size=10,color="#c8d8ec")),
+            showlegend=True,legend=dict(font=dict(size=8)))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("driver_donut"))
 
 
-def chart_driver_donut(data, sel_driver):
-    """Driver pie / donut."""
-    drivers = data.get("drivers", [])
-    if not drivers:
-        return
-    DCOLS = ["#00d4ff", "#f5a623", "#1df5a0", "#ff3d5a", "#9d7aff", "#ffd060"]
-    pull  = [0.12 if (sel_driver and d["name"] == sel_driver) else 0 for d in drivers]
+# ── ⑥ SCENARIO (only; regime weights removed per doc) ────────────────────────
+def render_scenario(result, agent, sel_scen):
+    section("06","SCENARIO SIMULATION","Select scenario in sidebar")
+    sp   = result.get("scenario_paths",{})
+    ho   = agent=="ho"
+    md   = result.get("market_data",{})
+    f    = result.get("forecast",{})
+    spot = md.get("HO",result.get("ho_price",3.5)) if ho else f.get("current_wti",result.get("wti",80))
 
-    fig = go.Figure(go.Pie(
-        labels=[d["name"] for d in drivers],
-        values=[d["pct"] for d in drivers],
-        hole=0.55,
-        marker_colors=DCOLS[:len(drivers)],
-        pull=pull,
-        hovertemplate="%{label}: %{value:.1f}%<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=260,
-        title=dict(text="Driver Share", font=dict(size=10, color="#c8d8ec")),
-        showlegend=True,
-        legend=dict(font=dict(size=8)),
-    )
-    return fig
+    fig=go.Figure()
+    for i,(sname,path) in enumerate(sp.items()):
+        opa = 1.0 if not sel_scen or sel_scen==sname else 0.2
+        wid = 2.5 if not sel_scen or sel_scen==sname else 1
+        fig.add_trace(go.Scatter(x=["Today"]+path["dates"],y=[spot]+path["prices"],
+            name=sname,line=dict(color=SCEN_COLORS[i%5],width=wid),opacity=opa,
+            hovertemplate=f"{sname}: $%{{y:.4f}}<extra></extra>"))
+    fmt="$.4f" if ho else "$.2f"
+    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
+        title=dict(text="14-Day Scenario Simulation Paths",font=dict(size=11,color="#c8d8ec")),
+        yaxis=dict(tickformat=fmt),hovermode="x unified",
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
+    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen"))
 
-
-def chart_scenarios(data, agent, sel_scenario):
-    """Scenario simulation paths — line chart."""
-    sp   = data.get("scenario_paths", {})
-    ho   = agent == "ho"
-    md   = data.get("market_data", {})
-    f    = data.get("forecast", {})
-    spot = md.get("HO", data.get("ho_price", 3.5)) if ho else f.get("current_wti", data.get("wti", 80))
-
-    fc_dates = next_biz_days(14)
-    fig = go.Figure()
-
-    for i, (sname, path) in enumerate(sp.items()):
-        opa  = 1.0 if not sel_scenario or sel_scenario == sname else 0.2
-        wid  = 2.5 if not sel_scenario or sel_scenario == sname else 1
-        fig.add_trace(go.Scatter(
-            x=["Today"] + path["dates"],
-            y=[spot] + path["prices"],
-            name=sname,
-            line=dict(color=SCEN_COLORS[i % 5], width=wid),
-            opacity=opa,
-            hovertemplate=f"{sname}: $%{{y:.4f}}<extra></extra>",
-        ))
-
-    fmt = "$.4f" if ho else "$.2f"
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=320,
-        title=dict(text="14-Day Scenario Simulation Paths", font=dict(size=11, color="#c8d8ec")),
-        yaxis=dict(tickformat=fmt),
-        hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    return fig
+    c1,c2 = st.columns(2)
+    # Final prices bar
+    with c1:
+        names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
+        _DIM=["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
+        cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else _DIM[i%5] for i,n in enumerate(names_s)]
+        fig=go.Figure(go.Bar(x=names_s,y=finals,marker_color=cols_s,
+            text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in finals],textposition="outside"))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
+            title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=10,color="#c8d8ec")),
+            yaxis=dict(tickformat="$.4f" if ho else "$.2f"),showlegend=False,bargap=0.2)
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen_final"))
+    # CI width
+    with c2:
+        cib=result.get("ci_bands",{})
+        w95=[round((cib.get(h,{}).get("ci95",[0,0])[1]-cib.get(h,{}).get("ci95",[0,0])[0]),4) for h in HORIZONS]
+        w80=[round((cib.get(h,{}).get("ci80",[0,0])[1]-cib.get(h,{}).get("ci80",[0,0])[0]),4) for h in HORIZONS]
+        mids=[cib.get(h,{}).get("mid",0) for h in HORIZONS]
+        fig=go.Figure()
+        fig.add_trace(go.Bar(x=HORIZONS,y=w95,name="95% CI Width",marker_color="rgba(29,245,160,.65)"))
+        fig.add_trace(go.Bar(x=HORIZONS,y=w80,name="80% CI Width",marker_color="rgba(0,212,255,.5)"))
+        fig.add_trace(go.Scatter(x=HORIZONS,y=mids,name="Midpoint",mode="lines+markers",
+            line=dict(color="#ffd060",width=1.5,dash="dot"),marker=dict(size=5)))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
+            title=dict(text="Forecast Uncertainty by Horizon (CI Width)",font=dict(size=10,color="#c8d8ec")),
+            yaxis=dict(title="Width ($)",tickformat="$.4f" if ho else "$.2f"),
+            barmode="overlay",bargap=0.2,legend=dict(orientation="h",y=1.1,x=0))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("ci_width"))
 
 
-def chart_scenario_final(data, agent, sel_scenario):
-    """Final price bar for each scenario."""
-    sp = data.get("scenario_paths", {})
-    ho = agent == "ho"
-    names  = list(sp.keys())
-    finals = [sp[s]["final"] for s in names]
-    _DIM = ["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
-    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario==n) else _DIM[i%5]
-              for i, n in enumerate(names)]
-    fig = go.Figure(go.Bar(
-        x=names, y=finals,
-        marker_color=colors,
-        text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in finals],
-        textposition="outside",
-        hovertemplate="%{x}: $%{y:.4f}<extra></extra>" if ho else "%{x}: $%{y:.2f}<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-        title=dict(text="Scenario Final Prices (Day 14)", font=dict(size=10, color="#c8d8ec")),
-        yaxis=dict(tickformat="$.4f" if ho else "$.2f"),
-        showlegend=False, bargap=0.2,
-    )
-    return fig
-
-
-def chart_scenario_weights(data, sel_scenario):
-    """Scenario weights donut."""
-    sw = data.get("scenario_weights", {})
-    if not sw:
-        return
-    labels = [k.replace("_", " ").title() for k in sw]
-    values = [round(v*100, 1) for v in sw.values()]
-    pull   = [0.12 if (sel_scenario and k.replace("_"," ").title() == sel_scenario) else 0
-              for k in sw]
-    fig = go.Figure(go.Pie(
-        labels=labels, values=values, hole=0.55,
-        marker_colors=SCEN_COLORS[:len(labels)],
-        pull=pull,
-        hovertemplate="%{label}: %{value:.1f}%<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-        title=dict(text="Scenario Weights (rule-based)", font=dict(size=10, color="#c8d8ec")),
-        legend=dict(font=dict(size=8)),
-    )
-    return fig
-
-
-def chart_region_map(data, agent, sel_region):
-    """US regional price bubble map."""
-    rp  = data.get("regional_prices", [])
-    ho  = agent == "ho"
-    if not rp:
-        return
-    avg = sum(r["price"] for r in rp) / len(rp)
+# ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────────
+def render_regional(result, agent, sel_reg):
+    section("07","REGIONAL PRICE MAP","Green = below avg, Red = above avg")
+    rp  = result.get("regional_prices",[])
+    ho  = agent=="ho"
+    if not rp: return
+    avg = sum(r["price"] for r in rp)/len(rp)
     df  = pd.DataFrame(rp)
-    df["delta_pct"] = ((df["price"] - avg) / avg * 100).round(2)
-    df["color"]     = df.apply(lambda r: "#ff3d5a" if r["price"] > avg else "#1df5a0", axis=1)
-    df["size"]      = 18
-    fmt_price = lambda p: f"${p:.4f}" if ho else f"${p:.3f}"
-    df["label"]     = df.apply(lambda r: f"{r['region']}\n{fmt_price(r['price'])}\n{r['delta_pct']:+.1f}% vs avg", axis=1)
-    df["selected"]  = df["region"].apply(lambda r: sel_region == r)
-    df["opacity"]   = df["region"].apply(lambda r: 1.0 if not sel_region or sel_region == r else 0.3)
+    df["delta_pct"]=((df["price"]-avg)/avg*100).round(2)
+    df["color"]=df.apply(lambda r:"#ff3d5a" if r["price"]>avg else "#1df5a0",axis=1)
 
-    fig = go.Figure()
-    for _, row in df.iterrows():
-        fig.add_trace(go.Scattergeo(
-            lat=[row["lat"]], lon=[row["lon"]],
-            mode="markers+text",
-            marker=dict(
-                size=22 if row["selected"] else 16,
-                color=row["color"],
-                opacity=row["opacity"],
-                line=dict(width=2 if row["selected"] else 0.5, color="#fff" if row["selected"] else "rgba(255,255,255,.3)"),
-            ),
-            text=[row["state"]],
-            textfont=dict(color="#fff", size=8),
-            textposition="middle center",
-            customdata=[[row["region"], row["price"], row["delta_pct"], row["factor"]]],
-            hovertemplate=(
-                "<b>%{customdata[0]}</b><br>"
-                + ("Price: $%{customdata[1]:.4f}/gal<br>" if ho else "Price: $%{customdata[1]:.3f}/gal<br>")
-                + "vs avg: %{customdata[2]:+.1f}%<br>"
-                + "%{customdata[3]}<extra></extra>"
-            ),
-            name=row["region"],
-            showlegend=False,
-        ))
-
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=320,
-        title=dict(text="US Regional Price Distribution", font=dict(size=11, color="#c8d8ec")),
-        geo=dict(
-            scope="usa",
-            bgcolor="#07090f",
-            landcolor="#0d1220",
-            coastlinecolor="#1a2540",
-            showlakes=False,
-            showrivers=False,
-            framecolor="#1a2540",
-        ),
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
-    return fig
+    c1,c2=st.columns(2)
+    with c1:
+        fig=go.Figure()
+        for _,row in df.iterrows():
+            sel=sel_reg==row["region"]
+            fig.add_trace(go.Scattergeo(lat=[row["lat"]],lon=[row["lon"]],
+                mode="markers+text",
+                marker=dict(size=22 if sel else 16,color=row["color"],
+                    opacity=1.0 if not sel_reg or sel else 0.3,
+                    line=dict(width=2 if sel else 0.5,color="#fff" if sel else "rgba(255,255,255,.3)")),
+                text=[row["state"]],textfont=dict(color="#fff",size=8),textposition="middle center",
+                customdata=[[row["region"],row["price"],row["delta_pct"],row["factor"]]],
+                hovertemplate="<b>%{customdata[0]}</b><br>Price: $%{customdata[1]:.4f}/gal<br>vs avg: %{customdata[2]:+.1f}%<br>%{customdata[3]}<extra></extra>",
+                name=row["region"],showlegend=False))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
+            title=dict(text="US Regional Price Distribution",font=dict(size=11,color="#c8d8ec")),
+            geo=dict(scope="usa",bgcolor="#07090f",landcolor="#0d1220",coastlinecolor="#1a2540",
+                showlakes=False,showrivers=False,framecolor="#1a2540"),
+            margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("map"))
+    with c2:
+        sorted_rp=sorted(rp,key=lambda r:r["price"],reverse=True)
+        names_r=[r["state"]+" ("+r["region"].split()[0]+")" for r in sorted_rp]
+        prices_r=[r["price"] for r in sorted_rp]
+        colors_r=["#00d4ff" if sel_reg==r["region"] else ("#ff3d5a" if r["price"]>avg else "#1df5a0") for r in sorted_rp]
+        fig=go.Figure()
+        fig.add_trace(go.Bar(x=names_r,y=prices_r,marker_color=colors_r,
+            text=[f"${p:.4f}" for p in prices_r],textposition="outside"))
+        fig.add_hline(y=avg,line=dict(color="#ffd060",width=1.5,dash="dash"),
+            annotation_text=f"Avg ${avg:.4f}",annotation_font=dict(color="#ffd060",size=9))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
+            title=dict(text="Regional Price Comparison",font=dict(size=11,color="#c8d8ec")),
+            yaxis=dict(tickformat="$.4f"),showlegend=False,bargap=0.2)
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("region_bar"))
 
 
-def chart_region_bar(data, agent, sel_region):
-    """Regional price bar chart."""
-    rp  = data.get("regional_prices", [])
-    ho  = agent == "ho"
-    if not rp:
-        return
-    avg    = sum(r["price"] for r in rp) / len(rp)
-    sorted_rp = sorted(rp, key=lambda r: r["price"], reverse=True)
-    names  = [r["state"]+" ("+r["region"].split()[0]+")" for r in sorted_rp]
-    prices = [r["price"] for r in sorted_rp]
-    colors = ["#00d4ff" if sel_region == r["region"] else ("#ff3d5a" if r["price"] > avg else "#1df5a0") for r in sorted_rp]
+# ── ⑧ EIA INVENTORY DEEP DIVE ────────────────────────────────────────────────
+def render_eia_deep_dive(result):
+    section("08","EIA INVENTORY DEEP DIVE","Weekly distillate stocks (Mbbl)")
+    eia = result.get("eia_data",{})
+    hist = eia.get("history",[])
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=names, y=prices, marker_color=colors,
-        text=[f"${p:.4f}" if ho else f"${p:.3f}" for p in prices],
-        textposition="outside",
-        hovertemplate=[f"{r['region']}<br>${r['price']:.4f}<br>{r['factor']}<extra></extra>" if ho
-                       else f"{r['region']}<br>${r['price']:.3f}<br>{r['factor']}<extra></extra>"
-                       for r in sorted_rp],
-    ))
-    fig.add_hline(y=avg, line=dict(color="#ffd060", width=1.5, dash="dash"),
-                  annotation_text=f"Avg ${avg:.4f}" if ho else f"Avg ${avg:.3f}",
-                  annotation_font=dict(color="#ffd060", size=9))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=280,
-        title=dict(text="Regional Price Comparison", font=dict(size=11, color="#c8d8ec")),
-        yaxis=dict(tickformat="$.4f" if ho else "$.3f"),
-        showlegend=False, bargap=0.2,
-    )
-    return fig
+    c1,c2,c3 = st.columns(3)
+    s  = eia.get("stocks_mbbl")
+    wow= eia.get("wow_change")
+    c1.metric("Latest Stocks", f"{s:,.0f} Mbbl" if s else "N/A")
+    c2.metric("Week-on-Week",  f"{wow:+,.0f} Mbbl" if wow else "N/A",
+              delta=f"{wow:+,.0f}" if wow else None)
+    # 4-wk avg
+    weeks = eia.get("weeks",[])
+    if weeks:
+        avg4  = sum(w["value"] for w in weeks[:4])/min(4,len(weeks))
+        c3.metric("4-Week Avg", f"{avg4:,.0f} Mbbl")
+    else:
+        c3.metric("4-Week Avg","N/A")
 
-
-def chart_profit_timeline(data, agent):
-    """Cost, retail and margin over time."""
-    pi  = data.get("profit_impact", {})
-    ho  = agent == "ho"
-    ch  = pi.get("cost_history", [])
-    if not ch:
-        return
-    df = pd.DataFrame(ch)
-
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["retail"],
-        name="Retail Price", line=dict(color="#f5a623", width=2),
-        fill="tozeroy", fillcolor="rgba(245,166,35,.06)",
-        hovertemplate="Retail: $%{y:.4f}<extra></extra>" if ho else "Retail: $%{y:.2f}<extra></extra>",
-    ), secondary_y=False)
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["cost"],
-        name="Cost (excl. margin)", line=dict(color="#00d4ff", width=1.5, dash="dot"),
-        hovertemplate="Cost: $%{y:.4f}<extra></extra>" if ho else "Cost: $%{y:.2f}<extra></extra>",
-    ), secondary_y=False)
-    fig.add_hline(y=pi.get("breakeven", 0),
-                  line=dict(color="rgba(255,61,90,.5)", width=1, dash="dash"),
-                  annotation_text=f"Breakeven ${pi.get('breakeven', 0):.4f}" if ho
-                                  else f"Breakeven ${pi.get('breakeven', 0):.2f}",
-                  annotation_font=dict(color="#ff3d5a", size=9))
-    fig.add_trace(go.Scatter(
-        x=df["date"], y=df["margin_pct"],
-        name="Margin %", line=dict(color="#1df5a0", width=1.5),
-        hovertemplate="Margin: %{y:.1f}%<extra></extra>",
-    ), secondary_y=True)
-
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=300,
-        title=dict(text="Cost, Retail & Margin Over Time (90-Day Rolling)", font=dict(size=11, color="#c8d8ec")),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-    )
-    fig.update_yaxes(title_text="Price", tickformat="$.4f" if ho else "$.2f", secondary_y=False)
-    fig.update_yaxes(title_text="Margin %", ticksuffix="%", secondary_y=True)
-    return fig
-
-
-def chart_scenario_cost(data, agent, sel_scenario):
-    """Retail price by scenario."""
-    pi = data.get("profit_impact", {})
-    sr = pi.get("scenario_retail", {})
-    ho = agent == "ho"
-    if not sr:
-        return
-    names  = list(sr.keys())
-    vals   = list(sr.values())
-    _DIM = ["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
-    colors = [SCEN_COLORS[i%5] if (not sel_scenario or sel_scenario == n) else _DIM[i%5]
-              for i, n in enumerate(names)]
-    fig = go.Figure(go.Bar(
-        x=names, y=vals, marker_color=colors,
-        text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in vals],
-        textposition="outside",
-        hovertemplate="%{x}: $%{y:.4f}<extra></extra>" if ho else "%{x}: $%{y:.2f}<extra></extra>",
-    ))
-    be = pi.get("breakeven", 0)
-    fig.add_hline(y=be + pi.get("margin", 0),
-                  line=dict(color="rgba(255,61,90,.5)", width=1, dash="dash"),
-                  annotation_text="Breakeven retail",
-                  annotation_font=dict(color="#ff3d5a", size=9))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-        title=dict(text="Retail Price by Scenario", font=dict(size=10, color="#c8d8ec")),
-        yaxis=dict(tickformat="$.4f" if ho else "$.2f"),
-        showlegend=False, bargap=0.2,
-    )
-    return fig
-
-
-def chart_ci_width(data, agent):
-    """CI band width by horizon — shows uncertainty growth."""
-    cib = data.get("ci_bands", {})
-    ho  = agent == "ho"
-    if not cib:
-        return
-    w95 = [round((cib.get(h,{}).get("ci95",[0,0])[1] - cib.get(h,{}).get("ci95",[0,0])[0]), 4) for h in HORIZONS]
-    w80 = [round((cib.get(h,{}).get("ci80",[0,0])[1] - cib.get(h,{}).get("ci80",[0,0])[0]), 4) for h in HORIZONS]
-    mids= [cib.get(h,{}).get("mid", 0) for h in HORIZONS]
-    fig = go.Figure()
-    fig.add_trace(go.Bar(x=HORIZONS, y=w95, name="95% CI Width",
-                         marker_color="rgba(29,245,160,.65)", hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
-    fig.add_trace(go.Bar(x=HORIZONS, y=w80, name="80% CI Width",
-                         marker_color="rgba(0,212,255,.5)", hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
-    fig.add_trace(go.Scatter(x=HORIZONS, y=mids, name="Midpoint",
-                             mode="lines+markers", line=dict(color="#ffd060", width=1.5, dash="dot"),
-                             marker=dict(size=5)))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-        title=dict(text="Forecast Uncertainty by Horizon (CI Width)", font=dict(size=10, color="#c8d8ec")),
-        yaxis=dict(title="Width ($)", tickformat="$.4f" if ho else "$.2f"),
-        barmode="overlay", bargap=0.2,
-        legend=dict(orientation="h", y=1.1, x=0),
-    )
-    return fig
-
-
-def chart_custom_bands(data):
-    """HO custom risk bands heatmap."""
-    cb = data.get("custom_bands", {})
-    if not cb:
-        return
-    bands   = list(cb.get(HORIZONS[0], {}).keys())
-    fig     = go.Figure()
-    BCOLS   = ["#00d4ff", "#f5a623", "#ff3d5a", "#1df5a0", "#9d7aff"]
-    for bi, band in enumerate(bands):
-        vals = [round((cb.get(h,{}).get(band,0))*100, 2) for h in HORIZONS]
-        fig.add_trace(go.Bar(
-            x=HORIZONS, y=vals, name=band,
-            marker_color=BCOLS[bi%5],
-            hovertemplate=f"{band} — %{{x}}: %{{y:.1f}}%<extra></extra>",
-        ))
-    fig.update_layout(
-        template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-        title=dict(text="HO Custom Risk Bands by Horizon", font=dict(size=10, color="#c8d8ec")),
-        yaxis=dict(title="Probability (%)", ticksuffix="%"),
-        barmode="group", bargap=0.15,
-        legend=dict(font=dict(size=8)),
-    )
-    return fig
-
-
-def render_prob_table(data, agent, sel_horizon, sel_bin):
-    """Probability table rendered as dark HTML — avoids st.dataframe white background."""
-    rows = data.get("prob_table", {})
-    if not rows:
+    if not hist:
+        st.info("EIA data unavailable — set EIA_API_KEY environment variable.")
         return
 
-    ho = agent == "ho"
-    all_bins = [r[0] for r in rows.get(HORIZONS[0], [])]
+    df = pd.DataFrame(hist)
+    c_a,c_b = st.columns([3,1])
+    with c_a:
+        fig=go.Figure()
+        fig.add_trace(go.Scatter(x=df["period"],y=df["value"],mode="lines+markers",
+            line=dict(color="#00d4ff",width=2),marker=dict(size=4),
+            fill="tozeroy",fillcolor="rgba(0,212,255,.07)",
+            hovertemplate="Week %{x}: %{y:,.0f} Mbbl<extra></extra>",name="Distillate Stocks"))
+        if len(df)>=4:
+            avg_v = df["value"].mean()
+            fig.add_hline(y=avg_v,line=dict(color="#ffd060",width=1,dash="dash"),
+                annotation_text=f"Avg {avg_v:,.0f} Mbbl",annotation_font=dict(color="#ffd060",size=9))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+            title=dict(text="EIA Distillate Fuel Oil Stocks — US Total (Mbbl)",font=dict(size=11,color="#c8d8ec")),
+            xaxis=dict(title=""),yaxis=dict(title="Mbbl"),showlegend=False)
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("eia"))
+    with c_b:
+        # WoW bar
+        if len(df)>=2:
+            wows = [round(df["value"].iloc[i]-df["value"].iloc[i-1],0) for i in range(1,min(12,len(df)))]
+            wow_dates = [df["period"].iloc[i] for i in range(1,min(12,len(df)))]
+            colors_w  = ["#1df5a0" if w>=0 else "#ff3d5a" for w in wows]
+            fig=go.Figure(go.Bar(x=wow_dates,y=wows,marker_color=colors_w,
+                hovertemplate="%{x}: %{y:+,.0f} Mbbl<extra></extra>"))
+            fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+                title=dict(text="WoW Change",font=dict(size=10,color="#c8d8ec")),
+                yaxis=dict(title="Mbbl"),showlegend=False)
+            st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("eia_wow"))
 
-    # Build rows sorted so selected bin appears first
+
+# ── ⑨ CRACK SPREAD HISTORY & FORECAST ────────────────────────────────────────
+def render_crack_spread(result, agent):
+    section("09","CRACK SPREAD HISTORY","HO * 42 - WTI ($/bbl)")
+    ho = agent=="ho"
+    ch = result.get("crack_history",[])
+    md = result.get("market_data",{})
+    current_crack = md.get("crack_spread")
+
+    c1,c2 = st.columns([3,1])
+    with c1:
+        if not ch:
+            st.info("Crack spread history requires both HO and WTI history.")
+        else:
+            df = pd.DataFrame(ch)
+            avg= df["crack"].mean()
+            fig=go.Figure()
+            fig.add_trace(go.Scatter(x=df["date"],y=df["crack"],mode="lines",
+                line=dict(color="#1df5a0",width=2),
+                fill="tozeroy",fillcolor="rgba(29,245,160,.07)",
+                hovertemplate="%{x}: $%{y:.2f}/bbl<extra></extra>",name="Crack Spread"))
+            fig.add_hline(y=avg,line=dict(color="#ffd060",width=1,dash="dash"),
+                annotation_text=f"Avg ${avg:.2f}",annotation_font=dict(color="#ffd060",size=9))
+            if current_crack:
+                fig.add_hline(y=current_crack,line=dict(color="#ff3d5a",width=1.5,dash="dot"),
+                    annotation_text=f"Now ${current_crack:.2f}",
+                    annotation_font=dict(color="#ff3d5a",size=9))
+            fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
+                title=dict(text="HO Crack Spread History ($/bbl)",font=dict(size=11,color="#c8d8ec")),
+                xaxis=dict(type="date"),yaxis=dict(title="Crack Spread ($/bbl)"),showlegend=False)
+            st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("crack"))
+
+    with c2:
+        st.markdown("""<div style="padding:16px;background:#0d1220;border:1px solid #1a2540;
+            border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:11px;
+            line-height:2;color:#c8d8ec">""",unsafe_allow_html=True)
+        st.metric("Current Crack", f"${current_crack:.2f}/bbl" if current_crack else "N/A")
+        if ch:
+            df2=pd.DataFrame(ch)
+            st.metric("30d Avg",  f"${df2['crack'].tail(30).mean():.2f}/bbl")
+            st.metric("90d Avg",  f"${df2['crack'].tail(90).mean():.2f}/bbl")
+            st.metric("Ann. High",f"${df2['crack'].max():.2f}/bbl")
+            st.metric("Ann. Low", f"${df2['crack'].min():.2f}/bbl")
+        st.markdown("</div>",unsafe_allow_html=True)
+
+
+# ── ⑩ VALUE AT RISK & EXPECTED SHORTFALL ─────────────────────────────────────
+def render_var_es(result, agent):
+    section("10","VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
+    ho    = agent=="ho"
+    var_data = result.get("var_es",{})
+    if not var_data:
+        return
+
+    horizons_shown = ["1M","3M"]
+    cols = st.columns(len(horizons_shown)*2)
+    col_i=0
+    for h in horizons_shown:
+        d = var_data.get(h,{})
+        if not d: continue
+        conf = int(d.get("confidence",95))
+        cols[col_i].metric(f"VaR {h} ({conf}%)",  f"${d['var']:.4f}/gal" if ho else f"${d['var']:.2f}/bbl",
+            help="Max loss at this confidence level over the horizon")
+        cols[col_i+1].metric(f"ES {h} ({conf}%)", f"${d['es']:.4f}/gal" if ho else f"${d['es']:.2f}/bbl",
+            help="Average loss beyond VaR (Conditional VaR / CVaR)")
+        col_i+=2
+
+    c1,c2 = st.columns(2)
+    for ci,h in enumerate(horizons_shown):
+        d = var_data.get(h,{})
+        if not d: continue
+        pnl   = d.get("pnl_distribution",[])
+        plbls = d.get("percentile_labels",[])
+        if not pnl: continue
+        bar_colors=["#ff3d5a" if v<0 else "#1df5a0" for v in pnl]
+        fig=go.Figure(go.Bar(x=plbls,y=pnl,marker_color=bar_colors,
+            text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in pnl],
+            textposition="outside",hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
+        fig.add_hline(y=0,line=dict(color="#4a6080",width=1))
+        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
+            title=dict(text=f"P&L Percentile Distribution — {h}",font=dict(size=10,color="#c8d8ec")),
+            yaxis=dict(title="P&L ($/gal)" if ho else "P&L ($/bbl)"),
+            showlegend=False,bargap=0.15)
+        (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
+
+
+# ── Probability table (HTML, dark) ────────────────────────────────────────────
+def _render_prob_table(data, agent, sel_horizon, sel_bin):
+    rows = data.get("prob_table",{})
+    if not rows: return
+    ho        = agent=="ho"
+    all_bins  = [r[0] for r in rows.get(HORIZONS[0],[])]
     bin_probs = {}
     for h in HORIZONS:
-        for bin_label, prob in rows.get(h, []):
-            if bin_label not in bin_probs:
-                bin_probs[bin_label] = {}
-            bin_probs[bin_label][h] = prob
+        for bl,prob in rows.get(h,[]):
+            if bl not in bin_probs: bin_probs[bl]={}
+            bin_probs[bl][h]=prob
 
-    sorted_bins = sorted(all_bins, key=lambda b: (b != sel_bin))
-
-    # Header
-    th_style = (
-        "background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;"
+    th=("background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;"
         "font-size:9px;text-transform:uppercase;letter-spacing:.8px;"
-        "padding:9px 12px;border-bottom:1px solid #1a2540;text-align:center;"
-        "white-space:nowrap;"
-    )
-    th_left = th_style + "text-align:left;"
-    th_active = th_style + "color:#00d4ff;border-bottom:2px solid #00d4ff;"
-
-    header_cells = f'<th style="{th_left}">PRICE RANGE</th>'
+        "padding:9px 12px;border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;")
+    th_l=th+"text-align:left;"
+    th_a=th+"color:#00d4ff;border-bottom:2px solid #00d4ff;"
+    hcells=f'<th style="{th_l}">PRICE RANGE</th>'
     for h in HORIZONS:
-        s = th_active if h == sel_horizon else th_style
-        header_cells += f'<th style="{s}">{h}</th>'
+        hcells+=f'<th style="{th_a if h==sel_horizon else th}">{h}</th>'
 
-    # Rows
-    table_rows = ""
-    for bin_label in sorted_bins:
-        is_sel  = bin_label == sel_bin
-        probs   = bin_probs.get(bin_label, {})
-        h_prob  = probs.get(sel_horizon, 0)
-        is_best = h_prob == max((bin_probs.get(b, {}).get(sel_horizon, 0) for b in all_bins), default=0)
-
-        if is_sel:
-            row_bg = "background:#0a1e30;"
-        elif is_best:
-            row_bg = "background:#0a1e18;"
-        else:
-            row_bg = ""
-
-        td_base = f"padding:7px 12px;border-bottom:1px solid #0f1825;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:center;{row_bg}"
-        td_left = td_base + "text-align:left;"
-
-        if is_sel:
-            label_color = "color:#00d4ff;font-weight:700;"
-        elif is_best:
-            label_color = "color:#1df5a0;font-weight:600;"
-        else:
-            label_color = "color:#c8d8ec;"
-
-        cells = f'<td style="{td_left}{label_color}">{bin_label}</td>'
+    tbody=""
+    for bl in sorted(all_bins,key=lambda b:(b!=sel_bin)):
+        is_sel  = bl==sel_bin
+        probs   = bin_probs.get(bl,{})
+        h_prob  = probs.get(sel_horizon,0)
+        is_best = h_prob==max((bin_probs.get(b,{}).get(sel_horizon,0) for b in all_bins),default=0)
+        row_bg  = "background:#0a1e30;" if is_sel else ("background:#0a1e18;" if is_best else "")
+        td_b    = f"padding:7px 12px;border-bottom:1px solid #0f1825;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:center;{row_bg}"
+        lc      = "color:#00d4ff;font-weight:700;" if is_sel else ("color:#1df5a0;font-weight:600;" if is_best else "color:#c8d8ec;")
+        cells   = f'<td style="{td_b}text-align:left;{lc}">{bl}</td>'
         for h in HORIZONS:
-            p   = probs.get(h, 0)
-            pct = f"{p*100:.2f}%"
-            w   = min(60, int(p * (400 if ho else 500)))
-            bar_color = "#00d4ff" if h == sel_horizon else "#1a3050"
-            if is_sel:
-                cell_color = "color:#00d4ff;"
-            elif h == sel_horizon:
-                cell_color = "color:#c8d8ec;"
-            else:
-                cell_color = "color:#4a6080;"
-            bar_html = (
-                f'<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">'
-                f'<div style="width:60px;height:4px;background:#0d1220;border-radius:2px;">'
-                f'<div style="width:{w}px;height:100%;background:{bar_color};border-radius:2px;"></div></div>'
-                f'<span style="min-width:38px;text-align:right;{cell_color}">{pct}</span>'
-                f'</div>'
-            )
-            cells += f'<td style="{td_base}">{bar_html}</td>'
+            p   = probs.get(h,0); pct=f"{p*100:.2f}%"
+            w   = min(60,int(p*(400 if ho else 500)))
+            bc  = "#00d4ff" if h==sel_horizon else "#1a3050"
+            cc  = "color:#00d4ff;" if is_sel else ("color:#c8d8ec;" if h==sel_horizon else "color:#4a6080;")
+            bar=(f'<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">'
+                 f'<div style="width:60px;height:4px;background:#0d1220;border-radius:2px;">'
+                 f'<div style="width:{w}px;height:100%;background:{bc};border-radius:2px;"></div></div>'
+                 f'<span style="min-width:38px;text-align:right;{cc}">{pct}</span></div>')
+            cells+=f'<td style="{td_b}">{bar}</td>'
+        tbody+=f"<tr>{cells}</tr>"
 
-        table_rows += f"<tr>{cells}</tr>"
-
-    html = f"""
-    <div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">
-    <table style="width:100%;border-collapse:collapse;background:#07090f;">
-      <thead><tr>{header_cells}</tr></thead>
-      <tbody>{table_rows}</tbody>
-    </table>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#07090f;">'
+        f'<thead><tr>{hcells}</tr></thead><tbody>{tbody}</tbody></table></div>',
+        unsafe_allow_html=True)
 
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 def render_sidebar():
     st.sidebar.markdown("""
     <div style="padding:16px 0 8px">
-      <div style="font-size:18px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif">⚡ Energy Intel</div>
+      <div style="font-size:18px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif">Energy Intel</div>
       <div style="font-size:9px;color:#4a6080;font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.8px">COMMODITY PROBABILITY ENGINE</div>
-    </div>
-    """, unsafe_allow_html=True)
-
+    </div>""",unsafe_allow_html=True)
     st.sidebar.divider()
 
+    # Rate-limit info
+    sess = st.session_state.get("_session_id","default")
+    if "_session_id" not in st.session_state:
+        import uuid as _uuid
+        st.session_state["_session_id"] = _uuid.uuid4().hex
+        sess = st.session_state["_session_id"]
+    rem = limiter.remaining(sess)
+    st.sidebar.markdown(f'<div style="font-size:9px;color:#2a3850;font-family:\'JetBrains Mono\',monospace">Rate limit: {rem}/5 attempts remaining (15 min window)</div>',unsafe_allow_html=True)
+
     st.sidebar.markdown("**Run Agent**")
-    col1, col2 = st.sidebar.columns(2)
-    run_oil = col1.button("🛢️ Oil", use_container_width=True)
-    run_ho  = col2.button("🔥 HO", use_container_width=True)
+    col1,col2=st.sidebar.columns(2)
+    run_oil=col1.button("Oil",  use_container_width=True)
+    run_ho =col2.button("HO",   use_container_width=True)
 
     if run_oil:
-        with st.spinner("Fetching oil market data…"):
-            try:
-                result, log = run_oil_agent()
-                st.session_state.result  = result
-                st.session_state.agent   = "oil"
-                st.session_state.log     = log
-                st.session_state.sel_horizon  = "1M"
-                st.session_state.sel_bin      = None
-                st.session_state.sel_scenario = None
-                st.session_state.sel_region   = None
-                st.session_state.sel_driver   = None
-            except Exception as e:
-                st.error(f"Error: {e}")
+        allowed,_,reset_in=limiter.check(sess)
+        if not allowed:
+            st.error(f"Rate limit reached. Try again in {reset_in}s.")
+        else:
+            with st.spinner("Fetching oil market data..."):
+                try:
+                    result,log=run_oil_agent()
+                    st.session_state.update(result=result,agent="oil",log=log,
+                        sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
     if run_ho:
-        with st.spinner("Fetching heating oil data (1-year history)…"):
-            try:
-                result, log = run_ho_agent()
-                st.session_state.result  = result
-                st.session_state.agent   = "ho"
-                st.session_state.log     = log
-                st.session_state.sel_horizon  = "1M"
-                st.session_state.sel_bin      = None
-                st.session_state.sel_scenario = None
-                st.session_state.sel_region   = None
-                st.session_state.sel_driver   = None
-            except Exception as e:
-                st.error(f"Error: {e}")
+        allowed,_,reset_in=limiter.check(sess)
+        if not allowed:
+            st.error(f"Rate limit reached. Try again in {reset_in}s.")
+        else:
+            with st.spinner("Fetching heating oil data (1-year history)..."):
+                try:
+                    result,log=run_ho_agent()
+                    st.session_state.update(result=result,agent="ho",log=log,
+                        sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-    # Only show filters if data loaded
-    result = st.session_state.result
+    result=st.session_state.result
     if result:
         st.sidebar.divider()
         st.sidebar.markdown("**Cross-Filters**")
-        st.sidebar.caption("Selections here update all charts simultaneously")
+        st.sidebar.caption("Selections update all charts simultaneously")
 
-        # Horizon
-        h = st.sidebar.radio("Horizon", HORIZONS, index=HORIZONS.index(st.session_state.sel_horizon), horizontal=True)
-        st.session_state.sel_horizon = h
+        h = st.sidebar.radio("Horizon",HORIZONS,index=HORIZONS.index(st.session_state.sel_horizon),horizontal=True)
+        try: h=validate_enum(sanitize_str(h),set(HORIZONS))
+        except ValueError: h="1M"
+        st.session_state.sel_horizon=h
 
-        # Scenario
-        sp = result.get("scenario_paths", {})
-        scen_opts = ["(All)"] + list(sp.keys())
-        scen_idx  = scen_opts.index(st.session_state.sel_scenario) if st.session_state.sel_scenario in scen_opts else 0
-        sel_scen  = st.sidebar.selectbox("Scenario", scen_opts, index=scen_idx)
-        st.session_state.sel_scenario = None if sel_scen == "(All)" else sel_scen
+        sp=result.get("scenario_paths",{})
+        scen_opts=["(All)"]+list(sp.keys())
+        scen_opts_clean=[sanitize_str(s) for s in scen_opts]
+        sel_s=st.sidebar.selectbox("Scenario",scen_opts,index=0 if not st.session_state.sel_scenario else
+            (scen_opts.index(st.session_state.sel_scenario) if st.session_state.sel_scenario in scen_opts else 0))
+        st.session_state.sel_scenario=None if sel_s=="(All)" else sanitize_str(sel_s)
 
-        # Region
-        rp       = result.get("regional_prices", [])
-        reg_opts = ["(All)"] + [r["region"] for r in rp]
-        reg_idx  = reg_opts.index(st.session_state.sel_region) if st.session_state.sel_region in reg_opts else 0
-        sel_reg  = st.sidebar.selectbox("Region", reg_opts, index=reg_idx)
-        st.session_state.sel_region = None if sel_reg == "(All)" else sel_reg
+        rp=result.get("regional_prices",[])
+        reg_opts=["(All)"]+[r["region"] for r in rp]
+        sel_r=st.sidebar.selectbox("Region",reg_opts,index=0 if not st.session_state.sel_region else
+            (reg_opts.index(st.session_state.sel_region) if st.session_state.sel_region in reg_opts else 0))
+        st.session_state.sel_region=None if sel_r=="(All)" else sanitize_str(sel_r)
 
-        # Driver
-        drivers  = result.get("drivers", [])
-        drv_opts = ["(All)"] + [d["name"] for d in drivers]
-        drv_idx  = drv_opts.index(st.session_state.sel_driver) if st.session_state.sel_driver in drv_opts else 0
-        sel_drv  = st.sidebar.selectbox("Driver", drv_opts, index=drv_idx)
-        st.session_state.sel_driver = None if sel_drv == "(All)" else sel_drv
+        drivers=result.get("drivers",[])
+        drv_opts=["(All)"]+[d["name"] for d in drivers]
+        sel_d=st.sidebar.selectbox("Driver",drv_opts,index=0 if not st.session_state.sel_driver else
+            (drv_opts.index(st.session_state.sel_driver) if st.session_state.sel_driver in drv_opts else 0))
+        st.session_state.sel_driver=None if sel_d=="(All)" else sanitize_str(sel_d)
 
-        # Price bin
-        rows   = result.get("prob_table", {}).get(h, [])
-        bins   = ["(All)"] + [r[0] for r in rows]
-        bin_idx = bins.index(st.session_state.sel_bin) if st.session_state.sel_bin in bins else 0
-        sel_bin = st.sidebar.selectbox("Price Bin", bins, index=bin_idx)
-        st.session_state.sel_bin = None if sel_bin == "(All)" else sel_bin
+        rows=result.get("prob_table",{}).get(h,[])
+        bins=["(All)"]+[r[0] for r in rows]
+        sel_b=st.sidebar.selectbox("Price Bin",bins,index=0 if not st.session_state.sel_bin else
+            (bins.index(st.session_state.sel_bin) if st.session_state.sel_bin in bins else 0))
+        st.session_state.sel_bin=None if sel_b=="(All)" else sanitize_str(sel_b)
 
-        if st.sidebar.button("🔄 Clear all filters", use_container_width=True):
-            st.session_state.sel_horizon  = "1M"
-            st.session_state.sel_bin      = None
-            st.session_state.sel_scenario = None
-            st.session_state.sel_region   = None
-            st.session_state.sel_driver   = None
+        if st.sidebar.button("Clear all filters",use_container_width=True):
+            st.session_state.update(sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
             st.rerun()
 
     st.sidebar.divider()
     st.sidebar.markdown("""
     <div style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace;line-height:1.8">
-    📧 Contact for help:<br>
-    <a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">
-    lsaggioro@potonmail.com</a>
-    </div>
-    """, unsafe_allow_html=True)
+    Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">lsaggioro@potonmail.com</a>
+    </div>""",unsafe_allow_html=True)
 
 
 # ── MAIN DASHBOARD ────────────────────────────────────────────────────────────
 def render_dashboard():
-    result   = st.session_state.result
-    agent    = st.session_state.agent
-    sel_h    = st.session_state.sel_horizon
-    sel_bin  = st.session_state.sel_bin
-    sel_scen = st.session_state.sel_scenario
-    sel_reg  = st.session_state.sel_region
-    sel_drv  = st.session_state.sel_driver
+    result  = st.session_state.result
+    agent   = st.session_state.agent
+    sel_h   = st.session_state.sel_horizon
+    sel_bin = st.session_state.sel_bin
+    sel_scen= st.session_state.sel_scenario
+    sel_reg = st.session_state.sel_region
+    sel_drv = st.session_state.sel_driver
 
     if not result:
         st.markdown("""
         <div style="text-align:center;padding:80px 0">
-          <div style="font-size:48px;margin-bottom:16px">⚡</div>
           <div style="font-size:22px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif;margin-bottom:8px">
             Energy Intelligence Dashboard
           </div>
@@ -1056,175 +763,39 @@ def render_dashboard():
             DETERMINISTIC COMMODITY PROBABILITY ENGINE
           </div>
           <div style="margin-top:32px;font-size:13px;color:#2a3850">
-            ← Click <strong style="color:#f5a623">🛢️ Oil</strong> or <strong style="color:#00d4ff">🔥 HO</strong> in the sidebar to begin
+            Click <strong style="color:#f5a623">Oil</strong> or <strong style="color:#00d4ff">HO</strong> in the sidebar to begin
           </div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""",unsafe_allow_html=True)
         return
 
-    ho = agent == "ho"
-    md = result.get("market_data", {})
-    f  = result.get("forecast", {})
-    pi = result.get("profit_impact", {})
-    ci = result.get("ci_bands", {})
-    ci1m = ci.get("1M", {})
+    ho = agent=="ho"
 
-    # ── KPI ROW ───────────────────────────────────────────────────────────────
-    section("①", "KPI SNAPSHOT")
+    render_snapshot(result, agent)
+    render_price_history(result, agent)
+    render_prob_dist(result, agent, sel_h, sel_bin)
+    render_volatility(result)
+    render_drivers(result, agent, sel_drv)
+    render_scenario(result, agent, sel_scen)
+    render_regional(result, agent, sel_reg)
+
     if ho:
-        cols = st.columns(6)
-        metrics = [
-            ("HO Price", f"${md.get('HO', 0):.4f}", "$/gal"),
-            ("WTI", f"${md.get('WTI', 0):.2f}", "$/bbl"),
-            ("Crack Spread", f"${md.get('crack_spread', 0):.2f}", "$/bbl"),
-            ("VIX", f"{md.get('VIX', 0):.1f}", "volatility index"),
-            ("Retail (est.)", f"${pi.get('retail', 0):.4f}", "incl. margin"),
-            ("Margin %", f"{pi.get('margin_pct', 0):.1f}%", "distributor"),
-        ]
-    else:
-        cols = st.columns(6)
-        metrics = [
-            ("WTI Live", f"${f.get('current_wti', 0):.2f}", "per barrel"),
-            ("Brent", f"${result.get('brent', 0):.2f}", "per barrel"),
-            ("1-Wk Forecast", f"${f.get('forecast_low',0)}–${f.get('forecast_high',0)}", "90% CI"),
-            ("Ann. Vol", f"{f.get('annualised_vol', 0):.1f}%", "historical σ"),
-            ("Retail equiv.", f"${pi.get('retail', 0):.2f}", "$/bbl"),
-            ("Margin %", f"{pi.get('margin_pct', 0):.1f}%", "refinery"),
-        ]
-    for col, (label, val, sub) in zip(cols, metrics):
-        col.metric(label, val, sub)
+        render_eia_deep_dive(result)
+        render_crack_spread(result, agent)
+        render_var_es(result, agent)
 
-    # Δ from CI
-    ci_width = round((ci1m.get("ci95",[0,0])[1] - ci1m.get("ci95",[0,0])[0]), 4 if ho else 2)
-    st.caption(f"1M 95% CI range: **${ci_width}** · Regime: **{result.get('regime','—')}**" if ho
-               else f"1M 95% CI range: **${ci_width}** · Direction: **{f.get('direction','—')}**")
+    # Summary
+    section("--","MARKET SUMMARY")
+    with st.expander("View full summary",expanded=False):
+        st.code(result.get("summary",""),language=None)
 
-    # ── ② PRICE + CI ──────────────────────────────────────────────────────────
-    section("②", "PRICE HISTORY + CONFIDENCE INTERVAL FORECAST", "Scroll/pinch to zoom · Drag to pan")
-    chart_price_ci(result, agent)
+    # Run log
+    with st.expander("Run log",expanded=False):
+        st.markdown('<div class="status-box">'+"\n".join(st.session_state.log or [])+"</div>",
+            unsafe_allow_html=True)
 
-    # ── ③ PROBABILITY ─────────────────────────────────────────────────────────
-    section("③", "PROBABILITY DISTRIBUTION", "Select horizon in sidebar · Click chart bars to cross-filter")
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = chart_prob_distribution(result, agent, sel_h, sel_bin)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_2")
-    with c2:
-        fig = chart_cdf(result, sel_h)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_3")
-
-    # Prob table
-    st.markdown("**Probability Table** — all horizons")
-    render_prob_table(result, agent, sel_h, sel_bin)
-
-    # ── ④ VOL HEATMAP ─────────────────────────────────────────────────────────
-    section("④", "VOLATILITY HEATMAP", "Color intensity = market instability")
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        fig = chart_vol_heatmap(result)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_4")
-    with c2:
-        fig = chart_vol_histogram(result)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_5")
-
-    # ── ⑤ DRIVER ANALYSIS ────────────────────────────────────────────────────
-    section("⑤", "DRIVER ANALYSIS / EXPLAINABILITY", "Select driver in sidebar to isolate · SHAP-style contribution")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        fig = chart_drivers(result, agent, sel_drv)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_6")
-    with c2:
-        fig = chart_driver_donut(result, sel_drv)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_7")
-
-    # ── ⑥ SCENARIO SIMULATION ────────────────────────────────────────────────
-    section("⑥", "SCENARIO SIMULATION", "Select scenario in sidebar · All panels update together")
-    fig = chart_scenarios(result, agent, sel_scen)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_8")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        fig = chart_scenario_weights(result, sel_scen)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_9")
-    with c2:
-        fig = chart_scenario_final(result, agent, sel_scen)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_10")
-    with c3:
-        fig = chart_ci_width(result, agent)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_11")
-
-    # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────
-    section("⑦", "REGIONAL PRICE MAP", "Select region in sidebar to cross-filter · Green=below avg · Red=above avg")
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = chart_region_map(result, agent, sel_reg)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_12")
-    with c2:
-        fig = chart_region_bar(result, agent, sel_reg)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_13")
-
-    # ── ⑧ PROFIT / COST ──────────────────────────────────────────────────────
-    section("⑧", "PROFIT / COST IMPACT DASHBOARD", "Translates prices into business P&L · Select scenario to cross-filter")
-    fig = chart_profit_timeline(result, agent)
-    if fig:
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_14")
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        fig = chart_scenario_cost(result, agent, sel_scen)
-        if fig:
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_15")
-    with c2:
-        if ho:
-            fig = chart_custom_bands(result)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_16")
-        else:
-            fig = chart_ci_width(result, agent)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_17")
-    with c3:
-        # Margin % mini-chart from cost history
-        pi_ch = pi.get("cost_history", [])
-        if pi_ch:
-            df_m = pd.DataFrame(pi_ch)
-            fig_m = go.Figure(go.Scatter(
-                x=df_m["date"], y=df_m["margin_pct"],
-                mode="lines", line=dict(color="#1df5a0", width=1.5),
-                fill="tozeroy", fillcolor="rgba(29,245,160,.07)",
-                hovertemplate="Margin: %{y:.1f}%<extra></extra>",
-            ))
-            fig_m.update_layout(
-                template=PLOTLY_TEMPLATE,
-        paper_bgcolor="#07090f",
-        plot_bgcolor="#07090f", height=240,
-                title=dict(text="Rolling Margin % History", font=dict(size=10, color="#c8d8ec")),
-                yaxis=dict(ticksuffix="%"), showlegend=False)
-            st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False, "displaylogo": False}, key="chart_18")
-
-    # ── SUMMARY ──────────────────────────────────────────────────────────────
-    section("📄", "MARKET SUMMARY")
-    with st.expander("View full summary", expanded=False):
-        st.code(result.get("summary", ""), language=None)
-
-    # ── LOG ──────────────────────────────────────────────────────────────────
-    with st.expander("🔧 Run log", expanded=False):
-        st.markdown(
-            '<div class="status-box">' + "\n".join(st.session_state.log or []) + "</div>",
-            unsafe_allow_html=True
-        )
+    # Security audit (collapsed)
+    with st.expander("Security audit",expanded=False):
+        st.code(security_audit_report(),language=None)
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
@@ -1232,5 +803,5 @@ def main():
     render_sidebar()
     render_dashboard()
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
