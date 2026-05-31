@@ -23,6 +23,15 @@ try:
 except ImportError:
     _REQUESTS_OK = False
 
+# Load .env for local dev — must happen before _eia_key() is ever called
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    # find .env relative to this file so it works from any working directory
+    _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    _load_dotenv(dotenv_path=_env_path, override=False)
+except ImportError:
+    pass
+
 warnings.filterwarnings('ignore')
 
 OUTPUT_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
@@ -46,7 +55,18 @@ CUSTOM_BANDS = [
 ]
 
 def _eia_key():
-    k = os.environ.get("EIA_API_KEY", "")
+    k = os.environ.get("EIA_API_KEY", "").strip()
+    if k and k != "DEMO_KEY":
+        return k
+    # One more attempt: reload .env in case this module was imported before
+    # streamlit_app.py ran load_dotenv (can happen with st.cache_data)
+    try:
+        from dotenv import load_dotenv as _ld, dotenv_values as _dv
+        _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        _ld(dotenv_path=_env_path, override=True)
+        k = os.environ.get("EIA_API_KEY", "").strip()
+    except Exception:
+        pass
     return k if k and k != "DEMO_KEY" else ""
 
 # ── Probability Models ─────────────────────────────────────────────────────────
