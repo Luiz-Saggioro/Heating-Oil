@@ -21,7 +21,71 @@ try:
 except ImportError:
     pass
 
-from security import limiter, sanitize_str, validate_enum, security_audit_report
+# ── INLINED SECURITY MODULE ───────────────────────────────────────────────────
+# Inlined so no extra file is required on Streamlit Cloud.
+import re, html, time, logging
+from collections import defaultdict
+from typing import Any, Collection
+
+_RATE_LIMIT_WINDOW: int = int(os.environ.get("RATE_LIMIT_WINDOW", 900))
+_RATE_LIMIT_MAX: int    = int(os.environ.get("RATE_LIMIT_MAX_ATTEMPTS", 5))
+_MAX_PAYLOAD: int       = int(os.environ.get("MAX_PAYLOAD_BYTES", 65536))
+_SAFE_PATTERN           = re.compile(r"[^a-zA-Z0-9 $.\-+%/(),]")
+_MAX_STR_LEN            = 128
+
+class _RateLimiter:
+    def __init__(self, max_attempts=_RATE_LIMIT_MAX, window_secs=_RATE_LIMIT_WINDOW):
+        self._max = max_attempts
+        self._win = window_secs
+        self._log: dict = defaultdict(list)
+
+    def check(self, session_id: str):
+        now = time.monotonic()
+        history = self._log[session_id]
+        history[:] = [t for t in history if t > now - self._win]
+        if len(history) >= self._max:
+            reset_in = int(self._win - (now - history[0])) + 1
+            return False, 0, reset_in
+        history.append(now)
+        return True, self._max - len(history), 0
+
+    def remaining(self, session_id: str) -> int:
+        now = time.monotonic()
+        history = [t for t in self._log.get(session_id, []) if t > now - self._win]
+        return max(0, self._max - len(history))
+
+def sanitize_str(value: Any, field: str = "input") -> str:
+    if value is None:
+        return ""
+    cleaned = _SAFE_PATTERN.sub("", html.escape(str(value), quote=True)).strip()
+    return cleaned[:_MAX_STR_LEN]
+
+def validate_enum(value: Any, allowed: Collection, field: str = "field") -> Any:
+    if value not in allowed:
+        raise ValueError(f"Invalid {field}: {value!r}")
+    return value
+
+def security_audit_report() -> str:
+    issues, passed = [], []
+    eia = os.environ.get("EIA_API_KEY", "")
+    if not eia:
+        issues.append("EIA_API_KEY not set — EIA inventory fetch will fail")
+    elif eia == "DEMO_KEY":
+        issues.append("EIA_API_KEY is still 'DEMO_KEY' — set a real key")
+    else:
+        passed.append("EIA_API_KEY is set")
+    passed.append(f"Rate limit: {_RATE_LIMIT_MAX} attempts / {_RATE_LIMIT_WINDOW}s window")
+    passed.append(f"Payload limit: {_MAX_PAYLOAD} bytes")
+    lines = ["=== SECURITY AUDIT REPORT ==="]
+    if passed:
+        lines += ["", "PASSED:"] + [f"  [OK] {p}" for p in passed]
+    if issues:
+        lines += ["", "WARNINGS:"] + [f"  [!!] {i}" for i in issues]
+    if not issues:
+        lines.append("\nAll checks passed.")
+    return "\n".join(lines)
+
+limiter = _RateLimiter()
 
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -200,7 +264,12 @@ def render_price_history(result, agent):
     fig.add_trace(go.Scatter(x=labels,y=ma,name=f"{maN}d MA",
         line=dict(color="#9d7aff",width=1.5,dash="dot")))
 
-    yrange = [1.5,5.0] if ho else None
+    if ho:
+        p_min = min(prices)
+        p_max = max(prices)
+        yrange = [round(p_min - 0.25, 4), round(p_max + 0.25, 4)]
+    else:
+        yrange = None
     fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=340,
         title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History",
                    font=dict(size=12,color="#c8d8ec")),
