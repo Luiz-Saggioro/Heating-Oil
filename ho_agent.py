@@ -297,6 +297,7 @@ def run(send=print):
     rbob=rbob_d.get("current"); dxy=dxy_d.get("current"); vix=vix_d.get("current")
     returns=ho_d.get("returns",[]); history=ho_d.get("history",[])
     wti_history=wti_d.get("history",[])
+    is_synthetic_history = ho_d.get("is_synthetic", any(r.get("synthetic") for r in history))
 
     today_str = str(datetime.date.today())
     if history and history[-1]["date"]!=today_str:
@@ -423,7 +424,7 @@ def run(send=print):
     send("=== DONE ===")
 
     return {
-        "agent":"ho","ho_price":ho,"history":history,
+        "agent":"ho","ho_price":ho,"history":history,"is_synthetic_history":is_synthetic_history,
         "returns":[round(float(r),6) for r in r_arr.tolist()],
         "market_data":{"HO":ho,"WTI":wti,"Brent":brent,"RBOB":rbob,"DXY":dxy,"VIX":vix,"crack_spread":crack},
         "eia_data":eia_data,"regime":regime,
