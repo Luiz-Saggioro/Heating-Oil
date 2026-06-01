@@ -55,19 +55,39 @@ CUSTOM_BANDS = [
 ]
 
 def _eia_key():
+    """
+    Read EIA_API_KEY from every possible source, in priority order:
+      1. Streamlit Cloud secrets  (st.secrets["EIA_API_KEY"])
+      2. os.environ               (works for local .env loaded by dotenv)
+      3. .env file directly       (last resort re-read)
+    Returns empty string if none found or key is the placeholder "DEMO_KEY".
+    """
+    # 1. Streamlit secrets (Streamlit Cloud / secrets.toml)
+    try:
+        import streamlit as _st
+        k = _st.secrets.get("EIA_API_KEY", "").strip()
+        if k and k != "DEMO_KEY":
+            return k
+    except Exception:
+        pass
+
+    # 2. Environment variable (loaded by dotenv or set directly)
     k = os.environ.get("EIA_API_KEY", "").strip()
     if k and k != "DEMO_KEY":
         return k
-    # One more attempt: reload .env in case this module was imported before
-    # streamlit_app.py ran load_dotenv (can happen with st.cache_data)
+
+    # 3. Re-read .env directly as a last resort
     try:
-        from dotenv import load_dotenv as _ld, dotenv_values as _dv
+        from dotenv import load_dotenv as _ld
         _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
         _ld(dotenv_path=_env_path, override=True)
         k = os.environ.get("EIA_API_KEY", "").strip()
+        if k and k != "DEMO_KEY":
+            return k
     except Exception:
         pass
-    return k if k and k != "DEMO_KEY" else ""
+
+    return ""
 
 # ── Probability Models ─────────────────────────────────────────────────────────
 
@@ -198,8 +218,11 @@ def fetch_eia_distillate(send=print):
     send("Fetching EIA distillate stocks ...")
     key = _eia_key()
     if not key:
-        send("  [WARN] EIA_API_KEY not set in environment — skipping EIA fetch")
-        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+        send("  [WARN] EIA_API_KEY not found in Streamlit secrets, environment, or .env file — skipping EIA fetch")
+        send("  [INFO] On Streamlit Cloud: add EIA_API_KEY in Manage app > Settings > Secrets")
+        send("  [INFO] Locally: set EIA_API_KEY=<your_key> in your .env file")
+        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "key_missing": True}
+    send("  EIA key found (length {}), calling API ...".format(len(key)))
     url = (
         "https://api.eia.gov/v2/petroleum/stoc/wstk/data/"
         "?api_key={}&frequency=weekly&data[0]=value"
