@@ -405,40 +405,6 @@ def render_volatility(result):
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
 
 
-# ── ⑤ DRIVER ANALYSIS (rule-based, kept optional) ────────────────────────────
-def render_drivers(result, agent, sel_drv):
-    section("05","DRIVER ANALYSIS","Rule-based contribution weights")
-    drivers = result.get("drivers",[])
-    if not drivers: return
-    ho = agent=="ho"
-    names  = [d["name"] for d in drivers]
-    values = [d["pct"] for d in drivers]
-    colors = ["#00d4ff" if (sel_drv and d["name"]==sel_drv) else
-              ("rgba(0,212,255,.2)" if sel_drv else ("#f5a623" if ho else "#00d4ff"))
-              for d in drivers]
-
-    c1,c2 = st.columns([2,1])
-    with c1:
-        fig=go.Figure(go.Bar(x=names,y=values,marker_color=colors,
-            text=[f"{v:.1f}%" for v in values],textposition="outside",
-            hovertemplate="%{x}: %{y:.1f}% weight<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
-            title=dict(text="Price Driver Contribution (rule-based)",font=dict(size=11,color="#c8d8ec")),
-            yaxis=dict(title="Relative Weight (%)",ticksuffix="%"),
-            xaxis=dict(title=""),showlegend=False,bargap=0.2)
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("drivers"))
-    with c2:
-        DCOLS=["#00d4ff","#f5a623","#1df5a0","#ff3d5a","#9d7aff","#ffd060"]
-        pull=[0.12 if (sel_drv and d["name"]==sel_drv) else 0 for d in drivers]
-        fig=go.Figure(go.Pie(labels=names,values=values,hole=0.55,
-            marker_colors=DCOLS[:len(drivers)],pull=pull,
-            hovertemplate="%{label}: %{value:.1f}%<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
-            title=dict(text="Driver Share",font=dict(size=10,color="#c8d8ec")),
-            showlegend=True,legend=dict(font=dict(size=8)))
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("driver_donut"))
-
-
 # ── ⑥ SCENARIO (only; regime weights removed per doc) ────────────────────────
 def render_scenario(result, agent, sel_scen):
     section("06","SCENARIO SIMULATION","Select scenario in sidebar")
@@ -815,12 +781,6 @@ def render_sidebar():
             (reg_opts.index(st.session_state.sel_region) if st.session_state.sel_region in reg_opts else 0))
         st.session_state.sel_region=None if sel_r=="(All)" else sanitize_str(sel_r)
 
-        drivers=result.get("drivers",[])
-        drv_opts=["(All)"]+[d["name"] for d in drivers]
-        sel_d=st.sidebar.selectbox("Driver",drv_opts,index=0 if not st.session_state.sel_driver else
-            (drv_opts.index(st.session_state.sel_driver) if st.session_state.sel_driver in drv_opts else 0))
-        st.session_state.sel_driver=None if sel_d=="(All)" else sanitize_str(sel_d)
-
         rows=result.get("prob_table",{}).get(h,[])
         bins=["(All)"]+[r[0] for r in rows]
         sel_b=st.sidebar.selectbox("Price Bin",bins,index=0 if not st.session_state.sel_bin else
@@ -869,7 +829,6 @@ def render_dashboard():
     render_price_history(result, agent)
     render_prob_dist(result, agent, sel_h, sel_bin)
     render_volatility(result)
-    render_drivers(result, agent, sel_drv)
     render_scenario(result, agent, sel_scen)
     render_regional(result, agent, sel_reg)
 
