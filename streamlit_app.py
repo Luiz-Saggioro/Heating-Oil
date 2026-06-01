@@ -560,7 +560,21 @@ def render_eia_deep_dive(result):
         c3.metric("4-Week Avg","N/A")
 
     if not hist:
-        st.info("EIA data unavailable — set EIA_API_KEY environment variable.")
+        key_missing = eia.get("key_missing", False)
+        if key_missing:
+            st.warning(
+                "**EIA API key not found.** "
+                "On Streamlit Cloud: go to **Manage app → Settings → Secrets** and add:\n\n"
+                "```toml\nEIA_API_KEY = \"your_key_here\"\n```\n\n"
+                "Locally: make sure your `.env` file contains `EIA_API_KEY=your_key_here` "
+                "and the file is in the same folder as `ho_agent.py`."
+            )
+        else:
+            st.warning(
+                "**EIA API returned no data.** The key was found but the request failed — "
+                "check the Run Log at the bottom of the page for the specific error. "
+                "The EIA API occasionally has outages; try refreshing in a few minutes."
+            )
         return
 
     df = pd.DataFrame(hist)
