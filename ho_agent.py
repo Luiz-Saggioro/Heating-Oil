@@ -215,37 +215,83 @@ def build_crack_spread_history(ho_history, wti_history):
 
 
 def fetch_eia_distillate(send=print):
+    """
+    Fetch weekly US distillate fuel oil stocks from EIA API v2.
+
+    Uses urllib so there is no dependency on requests for this call.
+    Parameters are passed as a proper dict and percent-encoded by urllib,
+    which avoids the bracket-mangling bug that broke the old hand-built URL.
+
+    Series: petroleum/stoc/wstk
+    Product: EPD2F  (Distillate Fuel Oil, No. 2)
+    Area:    NUS    (US Total)
+    """
+    import urllib.parse
+
     send("Fetching EIA distillate stocks ...")
     key = _eia_key()
     if not key:
-        send("  [WARN] EIA_API_KEY not found in Streamlit secrets, environment, or .env file — skipping EIA fetch")
-        send("  [INFO] On Streamlit Cloud: add EIA_API_KEY in Manage app > Settings > Secrets")
-        send("  [INFO] Locally: set EIA_API_KEY=<your_key> in your .env file")
+        send("  [WARN] EIA_API_KEY not found in Streamlit secrets, environment, or .env file")
+        send("  [INFO] On Streamlit Cloud: Manage app > Settings > Secrets > add EIA_API_KEY")
+        send("  [INFO] Locally: add EIA_API_KEY=<your_key> to your .env file")
         return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "key_missing": True}
+
     send("  EIA key found (length {}), calling API ...".format(len(key)))
-    url = (
-        "https://api.eia.gov/v2/petroleum/stoc/wstk/data/"
-        "?api_key={}&frequency=weekly&data[0]=value"
-        "&facets[product][]=DFO&facets[duoarea][]=NUS"
-        "&sort[0][column]=period&sort[0][direction]=desc&length=52".format(key)
-    )
+
+    # Build URL with properly encoded parameters
+    # The EIA v2 API requires array-style params: data[]=value, facets[product][]=EPD2F
+    # urllib.parse.urlencode handles the encoding; we pass a list of tuples for repeated keys.
+    base = "https://api.eia.gov/v2/petroleum/stoc/wstk/data/"
+    params = [
+        ("api_key",               key),
+        ("frequency",             "weekly"),
+        ("data[]",                "value"),
+        ("facets[product][]",     "EPD2F"),   # Distillate Fuel Oil No.2
+        ("facets[duoarea][]",     "NUS"),      # US Total
+        ("sort[0][column]",       "period"),
+        ("sort[0][direction]",    "desc"),
+        ("length",                "52"),
+    ]
+    url = base + "?" + urllib.parse.urlencode(params)
+    send("  EIA URL (key redacted): {}".format(url.replace(key, "***")))
+
     try:
-        if not _REQUESTS_OK:
-            raise RuntimeError("requests not installed")
-        r = _requests.get(url, timeout=15)
-        r.raise_for_status()
-        rows = r.json().get("response",{}).get("data",[])
-        if rows:
-            latest = float(rows[0]["value"])
-            prev   = float(rows[1]["value"]) if len(rows)>1 else latest
-            send("  EIA distillate: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest-prev))
-            history = [{"period": row["period"], "value": float(row["value"])}
-                       for row in rows if row.get("value") not in (None,"")]
-            return {"stocks_mbbl": latest, "wow_change": latest-prev,
-                    "weeks": history[:8], "history": list(reversed(history))}
+        import urllib.request as _ur
+        req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        with _ur.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode())
+
+        send("  EIA raw response keys: {}".format(list(payload.keys())))
+        inner = payload.get("response", {})
+        rows  = inner.get("data", [])
+        send("  EIA rows returned: {}".format(len(rows)))
+
+        if not rows:
+            # Log the full response to help diagnose
+            send("  EIA response body: {}".format(str(payload)[:400]))
+            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+
+        # Filter out rows with null/empty values
+        valid = [r for r in rows if r.get("value") not in (None, "", "null")]
+        if not valid:
+            send("  [WARN] EIA returned rows but all values were null")
+            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+
+        latest = float(valid[0]["value"])
+        prev   = float(valid[1]["value"]) if len(valid) > 1 else latest
+        send("  EIA distillate: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest - prev))
+
+        history = [{"period": r["period"], "value": float(r["value"])} for r in valid]
+        return {
+            "stocks_mbbl": latest,
+            "wow_change":  latest - prev,
+            "weeks":       history[:8],
+            "history":     list(reversed(history)),
+        }
+
     except Exception as e:
-        send("  [WARN] EIA API: {}".format(e))
-    return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+        send("  [WARN] EIA API call failed: {} — {}".format(type(e).__name__, e))
+        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
 
 
 def detect_regime(ho, wti, vix, crack_spread, eia_data):
