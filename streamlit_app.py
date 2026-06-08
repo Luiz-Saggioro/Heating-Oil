@@ -530,49 +530,164 @@ def render_scenario(result, agent, sel_scen):
 
 # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────────
 def render_regional(result, agent, sel_reg):
-    section("07","REGIONAL PRICE MAP","Green = below avg, Red = above avg")
-    rp  = result.get("regional_prices",[])
-    ho  = agent=="ho"
+    section("07","REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
+    rp    = result.get("regional_prices",[])       # US
+    br_rp = result.get("brazil_regional_prices",[]) # Brazil
+    ho    = agent=="ho"
     if not rp: return
-    avg = sum(r["price"] for r in rp)/len(rp)
-    df  = pd.DataFrame(rp)
-    df["delta_pct"]=((df["price"]-avg)/avg*100).round(2)
-    df["color"]=df.apply(lambda r:"#ff3d5a" if r["price"]>avg else "#1df5a0",axis=1)
 
-    c1,c2=st.columns(2)
-    with c1:
-        fig=go.Figure()
-        for _,row in df.iterrows():
-            sel=sel_reg==row["region"]
-            fig.add_trace(go.Scattergeo(lat=[row["lat"]],lon=[row["lon"]],
+    # ── Helper: build one Scattergeo figure ───────────────────────────────────
+    def _make_map(data, scope, title, proj, center_lat=None, center_lon=None, scale=None):
+        avg_p = sum(r["price"] for r in data) / len(data)
+        fig   = go.Figure()
+        for r in data:
+            sel  = sel_reg == r["region"]
+            clr  = "#00d4ff" if sel else ("#ff3d5a" if r["price"] > avg_p else "#1df5a0")
+            delt = (r["price"] - avg_p) / avg_p * 100
+            fig.add_trace(go.Scattergeo(
+                lat=[r["lat"]], lon=[r["lon"]],
                 mode="markers+text",
-                marker=dict(size=22 if sel else 16,color=row["color"],
+                marker=dict(
+                    size=24 if sel else 17,
+                    color=clr,
                     opacity=1.0 if not sel_reg or sel else 0.3,
-                    line=dict(width=2 if sel else 0.5,color="#fff" if sel else "rgba(255,255,255,.3)")),
-                text=[row["state"]],textfont=dict(color="#fff",size=8),textposition="middle center",
-                customdata=[[row["region"],row["price"],row["delta_pct"],row["factor"]]],
-                hovertemplate="<b>%{customdata[0]}</b><br>Price: $%{customdata[1]:.4f}/gal<br>vs avg: %{customdata[2]:+.1f}%<br>%{customdata[3]}<extra></extra>",
-                name=row["region"],showlegend=False))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
-            title=dict(text="US Regional Price Distribution",font=dict(size=11,color="#c8d8ec")),
-            geo=dict(scope="usa",bgcolor="#07090f",landcolor="#0d1220",coastlinecolor="#1a2540",
-                showlakes=False,showrivers=False,framecolor="#1a2540"),
-            margin=dict(l=0,r=0,t=40,b=0))
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("map"))
-    with c2:
-        sorted_rp=sorted(rp,key=lambda r:r["price"],reverse=True)
-        names_r=[r["state"]+" ("+r["region"].split()[0]+")" for r in sorted_rp]
-        prices_r=[r["price"] for r in sorted_rp]
-        colors_r=["#00d4ff" if sel_reg==r["region"] else ("#ff3d5a" if r["price"]>avg else "#1df5a0") for r in sorted_rp]
-        fig=go.Figure()
-        fig.add_trace(go.Bar(x=names_r,y=prices_r,marker_color=colors_r,
-            text=[f"${p:.4f}" for p in prices_r],textposition="outside"))
-        fig.add_hline(y=avg,line=dict(color="#ffd060",width=1.5,dash="dash"),
-            annotation_text=f"Avg ${avg:.4f}",annotation_font=dict(color="#ffd060",size=9))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
-            title=dict(text="Regional Price Comparison",font=dict(size=11,color="#c8d8ec")),
-            yaxis=dict(tickformat="$.4f"),showlegend=False,bargap=0.2)
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("region_bar"))
+                    line=dict(width=2 if sel else 0.5,
+                              color="#fff" if sel else "rgba(255,255,255,.3)")),
+                text=[r["state"]],
+                textfont=dict(color="#fff", size=8),
+                textposition="middle center",
+                customdata=[[r["region"], r["price"], round(delt,1), r["factor"]]],
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Price: $%{customdata[1]:.4f}/gal<br>"
+                    "vs avg: %{customdata[2]:+.1f}%<br>"
+                    "%{customdata[3]}<extra></extra>"),
+                name=r["region"], showlegend=False))
+        geo_cfg = dict(
+            bgcolor="#07090f", landcolor="#0d1220",
+            coastlinecolor="#1a2540", showlakes=False,
+            showrivers=False, framecolor="#1a2540",
+            showocean=True, oceancolor="#07090f",
+            showcountries=True, countrycolor="#1a2540")
+        if scope:
+            geo_cfg["scope"] = scope
+        if proj:
+            geo_cfg["projection_type"] = proj
+        if center_lat is not None:
+            geo_cfg["center"] = dict(lat=center_lat, lon=center_lon)
+        if scale is not None:
+            geo_cfg["projection_scale"] = scale
+        fig.update_layout(
+            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f",
+            height=320,
+            title=dict(text=title, font=dict(size=11, color="#c8d8ec")),
+            geo=geo_cfg,
+            margin=dict(l=0, r=0, t=36, b=0))
+        return fig, avg_p
+
+    # ── Helper: price bar chart ────────────────────────────────────────────────
+    def _make_bar(data, avg_p, title, key):
+        sorted_d  = sorted(data, key=lambda r: r["price"], reverse=True)
+        names_r   = [r["state"] + " (" + r["region"].split()[0] + ")" for r in sorted_d]
+        prices_r  = [r["price"] for r in sorted_d]
+        colors_r  = [
+            "#00d4ff" if sel_reg == r["region"]
+            else ("#ff3d5a" if r["price"] > avg_p else "#1df5a0")
+            for r in sorted_d]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=names_r, y=prices_r, marker_color=colors_r,
+            text=[f"${p:.4f}" for p in prices_r], textposition="outside"))
+        fig.add_hline(y=avg_p,
+            line=dict(color="#ffd060", width=1.5, dash="dash"),
+            annotation_text=f"Avg ${avg_p:.4f}",
+            annotation_font=dict(color="#ffd060", size=9))
+        fig.update_layout(
+            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f",
+            height=260,
+            title=dict(text=title, font=dict(size=10, color="#c8d8ec")),
+            yaxis=dict(tickformat="$.4f"), showlegend=False, bargap=0.2,
+            margin=dict(l=40, r=10, t=36, b=60))
+        return fig
+
+    # ── US Map ────────────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:10px;font-weight:700;color:#4a6080;font-family:\'JetBrains Mono\','
+        'monospace;text-transform:uppercase;letter-spacing:1.2px;margin-bottom:6px">'
+        'UNITED STATES</div>', unsafe_allow_html=True)
+
+    us_m1, us_m2 = st.columns([3, 2])
+    with us_m1:
+        fig_us, us_avg = _make_map(
+            rp, scope="usa",
+            title="US Regional Distillate Price Distribution",
+            proj=None)
+        st.plotly_chart(fig_us, use_container_width=True, config=_PCFG, key=_pc("map_us"))
+    with us_m2:
+        fig_us_bar = _make_bar(rp, us_avg, "US Regional Prices", "us_bar")
+        st.plotly_chart(fig_us_bar, use_container_width=True, config=_PCFG, key=_pc("region_bar_us"))
+
+    # ── Brazil Map ────────────────────────────────────────────────────────────
+    if br_rp:
+        st.markdown(
+            '<div style="font-size:10px;font-weight:700;color:#4a6080;font-family:\'JetBrains Mono\','
+            'monospace;text-transform:uppercase;letter-spacing:1.2px;margin:16px 0 6px">'
+            'BRAZIL</div>', unsafe_allow_html=True)
+
+        br_m1, br_m2 = st.columns([3, 2])
+        with br_m1:
+            fig_br, br_avg = _make_map(
+                br_rp, scope=None,
+                title="Brazil Regional Diesel/Distillate Price Distribution",
+                proj="mercator",
+                center_lat=-14.0, center_lon=-52.0,
+                scale=2.8)
+            st.plotly_chart(fig_br, use_container_width=True, config=_PCFG, key=_pc("map_br"))
+        with br_m2:
+            fig_br_bar = _make_bar(br_rp, br_avg, "Brazil Regional Prices", "br_bar")
+            st.plotly_chart(fig_br_bar, use_container_width=True, config=_PCFG, key=_pc("region_bar_br"))
+
+        # ── Cross-country comparison bar ───────────────────────────────────────
+        st.markdown("**US vs Brazil — Regional Price Comparison** ($/gal equivalent)")
+        all_data = [(r["state"], r["price"], "US", "#00d4ff") for r in rp] + \
+                   [(r["state"], r["price"], "BR", "#f5a623") for r in br_rp]
+        all_data.sort(key=lambda x: x[1], reverse=True)
+        fig_cmp = go.Figure()
+        us_prices_all = [r["price"] for r in rp]
+        br_prices_all = [r["price"] for r in br_rp]
+        fig_cmp.add_trace(go.Bar(
+            x=[d[0] for d in all_data],
+            y=[d[1] for d in all_data],
+            marker_color=[d[3] for d in all_data],
+            text=[f"${d[1]:.4f} ({d[2]})" for d in all_data],
+            textposition="outside",
+            hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>"))
+        fig_cmp.add_hline(y=float(np.mean(us_prices_all)),
+            line=dict(color="#00d4ff", width=1, dash="dot"),
+            annotation_text=f"US avg ${np.mean(us_prices_all):.4f}",
+            annotation_font=dict(color="#00d4ff", size=8))
+        fig_cmp.add_hline(y=float(np.mean(br_prices_all)),
+            line=dict(color="#f5a623", width=1, dash="dot"),
+            annotation_text=f"BR avg ${np.mean(br_prices_all):.4f}",
+            annotation_font=dict(color="#f5a623", size=8))
+        fig_cmp.update_layout(
+            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f",
+            height=280,
+            title=dict(text="All Regions Ranked by Price — Blue = US, Orange = Brazil",
+                       font=dict(size=10, color="#c8d8ec")),
+            yaxis=dict(title="$/gal", tickformat="$.4f"),
+            showlegend=False, bargap=0.15,
+            margin=dict(l=40, r=10, t=36, b=60))
+        st.plotly_chart(fig_cmp, use_container_width=True, config=_PCFG, key=_pc("region_cmp"))
+
+        # Caption with delta
+        us_avg_v = float(np.mean(us_prices_all))
+        br_avg_v = float(np.mean(br_prices_all))
+        delta_pct = (br_avg_v - us_avg_v) / us_avg_v * 100
+        st.caption(
+            f"US avg: **${us_avg_v:.4f}/gal** · Brazil avg: **${br_avg_v:.4f}/gal** · "
+            f"Brazil is **{delta_pct:+.1f}%** vs US average · "
+            f"Brazil prices anchored to Petrobras refinery gate + state ICMS taxes")
 
 
 # ── ⑧ EIA INVENTORY DEEP DIVE ────────────────────────────────────────────────
