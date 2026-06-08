@@ -218,15 +218,16 @@ def fetch_eia_distillate(send=print):
     """
     Fetch weekly US distillate fuel oil stocks from EIA API v2.
 
-    Uses urllib so there is no dependency on requests for this call.
-    Parameters are passed as a proper dict and percent-encoded by urllib,
-    which avoids the bracket-mangling bug that broke the old hand-built URL.
+    Waterfall fetch strategy:
+      1. EIA v2 API  — raw brackets in URL (NOT urlencode — EIA rejects %5B%5D)
+      2. EIA v1 series API — older endpoint, broader key compatibility
+      3. FRED CSV   — WDISTUS series mirrors EIA weekly distillate data
 
-    Series: petroleum/stoc/wstk
-    Product: EPD2F  (Distillate Fuel Oil, No. 2)
-    Area:    NUS    (US Total)
+    Product: EPD2F (Distillate Fuel Oil, No. 2), Area: NUS (US Total)
     """
     import urllib.parse
+    import urllib.request as _ur
+    from collections import defaultdict
 
     send("Fetching EIA distillate stocks ...")
     key = _eia_key()
@@ -234,106 +235,189 @@ def fetch_eia_distillate(send=print):
         send("  [WARN] EIA_API_KEY not found in Streamlit secrets, environment, or .env file")
         send("  [INFO] On Streamlit Cloud: Manage app > Settings > Secrets > add EIA_API_KEY")
         send("  [INFO] Locally: add EIA_API_KEY=<your_key> to your .env file")
-        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "key_missing": True}
+        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [],
+                "seasonal_bands": [], "current_year_data": [], "key_missing": True}
 
     send("  EIA key found (length {}), calling API ...".format(len(key)))
 
-    # Build URL with properly encoded parameters
-    # The EIA v2 API requires array-style params: data[]=value, facets[product][]=EPD2F
-    # urllib.parse.urlencode handles the encoding; we pass a list of tuples for repeated keys.
-    base = "https://api.eia.gov/v2/petroleum/stoc/wstk/data/"
-    params = [
-        ("api_key",               key),
-        ("frequency",             "weekly"),
-        ("data[]",                "value"),
-        ("facets[product][]",     "EPD2F"),   # Distillate Fuel Oil No.2
-        ("facets[duoarea][]",     "NUS"),      # US Total
-        ("sort[0][column]",       "period"),
-        ("sort[0][direction]",    "desc"),
-        ("length",                "260"),  # ~5 years of weekly data
-    ]
-    url = base + "?" + urllib.parse.urlencode(params)
-    send("  EIA URL (key redacted): {}".format(url.replace(key, "***")))
+    # ── URL builder: keeps brackets UNENCODED (EIA v2 rejects %5B%5D) ─────────
+    def _eia_v2_url(n_rows=260):
+        # Only quote the values, never the keys — brackets must stay literal
+        pairs = [
+            ("api_key",            key),
+            ("frequency",          "weekly"),
+            ("data[]",             "value"),
+            ("facets[product][]",  "EPD2F"),
+            ("facets[duoarea][]",  "NUS"),
+            ("sort[0][column]",    "period"),
+            ("sort[0][direction]", "desc"),
+            ("length",             str(n_rows)),
+        ]
+        qs = "&".join("{}={}".format(k, urllib.parse.quote(str(v), safe=""))
+                      for k, v in pairs)
+        return "https://api.eia.gov/v2/petroleum/stoc/wstk/data/?" + qs
 
-    try:
-        import urllib.request as _ur
-        req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
-        with _ur.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode())
-
-        send("  EIA raw response keys: {}".format(list(payload.keys())))
+    # ── Common: parse v2 JSON payload → list of {period, value} dicts ─────────
+    def _parse_v2(payload, send):
         inner = payload.get("response", {})
         rows  = inner.get("data", [])
-        send("  EIA rows returned: {}".format(len(rows)))
-
+        send("  EIA v2 rows in response: {}".format(len(rows)))
         if not rows:
-            send("  EIA response body: {}".format(str(payload)[:400]))
-            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "seasonal_bands": []}
+            errs = payload.get("error") or inner.get("error") or str(payload)[:300]
+            send("  EIA v2 no-data detail: {}".format(errs))
+            return []
+        valid = [r for r in rows
+                 if r.get("value") not in (None, "", "null", "NA")]
+        send("  EIA v2 valid rows: {}".format(len(valid)))
+        return [{"period": r["period"], "value": float(r["value"])} for r in valid]
 
-        valid = [r for r in rows if r.get("value") not in (None, "", "null")]
-        if not valid:
-            send("  [WARN] EIA returned rows but all values were null")
-            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "seasonal_bands": []}
+    # ── Source 1: EIA v2 API ──────────────────────────────────────────────────
+    rows_desc = []
+    for n_rows in (260, 52):   # try 5-year first, fall back to 1-year
+        url = _eia_v2_url(n_rows)
+        send("  [EIA v2] GET {} rows — {}".format(n_rows, url.replace(key, "***")))
+        try:
+            req  = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0",
+                                             "Accept":     "application/json"})
+            with _ur.urlopen(req, timeout=25) as resp:
+                payload = json.loads(resp.read().decode())
+            rows_desc = _parse_v2(payload, send)
+            if rows_desc:
+                send("  [EIA v2] OK — {} data points".format(len(rows_desc)))
+                break
+        except _ur.HTTPError as e:
+            deny = e.headers.get("x-deny-reason", "")
+            body = ""
+            try: body = e.read().decode()[:200]
+            except Exception: pass
+            send("  [EIA v2] HTTPError {} {} deny={} body={}".format(
+                e.code, e.reason, deny, body))
+        except Exception as e:
+            send("  [EIA v2] {}: {}".format(type(e).__name__, e))
 
-        latest = float(valid[0]["value"])
-        prev   = float(valid[1]["value"]) if len(valid) > 1 else latest
-        send("  EIA distillate: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest - prev))
+    # ── Source 2: EIA v1 series API ───────────────────────────────────────────
+    if not rows_desc:
+        send("  [EIA v1] Trying legacy series API ...")
+        # PET.WDISTUS1.W = Weekly US Distillate Stocks, Mbbl
+        v1_url = ("https://api.eia.gov/series/"
+                  "?api_key={}&series_id=PET.WDISTUS1.W&num=260".format(key))
+        send("  [EIA v1] GET {}".format(v1_url.replace(key, "***")))
+        try:
+            req = _ur.Request(v1_url, headers={"User-Agent": "Mozilla/5.0",
+                                               "Accept":     "application/json"})
+            with _ur.urlopen(req, timeout=25) as resp:
+                payload = json.loads(resp.read().decode())
+            series = payload.get("series", [])
+            if series and series[0].get("data"):
+                raw_pts = series[0]["data"]   # [[yyyymmdd, value], ...]
+                for pt in raw_pts:
+                    try:
+                        dt_str  = str(pt[0])          # "20240101"
+                        val     = float(pt[1])
+                        # EIA v1 dates: weekly → YYYYMMDD
+                        dt      = datetime.datetime.strptime(dt_str, "%Y%m%d")
+                        rows_desc.append({"period": dt.strftime("%Y-%m-%d"), "value": val})
+                    except Exception:
+                        pass
+                send("  [EIA v1] OK — {} pts".format(len(rows_desc)))
+            else:
+                errs = payload.get("data", {}).get("error") or str(payload)[:300]
+                send("  [EIA v1] No series data: {}".format(errs))
+        except _ur.HTTPError as e:
+            deny = e.headers.get("x-deny-reason", "")
+            body = ""
+            try: body = e.read().decode()[:200]
+            except Exception: pass
+            send("  [EIA v1] HTTPError {} {} deny={} body={}".format(
+                e.code, e.reason, deny, body))
+        except Exception as e:
+            send("  [EIA v1] {}: {}".format(type(e).__name__, e))
 
-        history_all = [{"period": r["period"], "value": float(r["value"])} for r in valid]
-        history_all_asc = list(reversed(history_all))
+    # ── Source 3: FRED CSV (WDISTUS mirrors EIA weekly distillate) ────────────
+    if not rows_desc:
+        send("  [FRED] Trying FRED WDISTUS series as last resort ...")
+        fred_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WDISTUS"
+        send("  [FRED] GET {}".format(fred_url))
+        try:
+            req = _ur.Request(fred_url, headers={"User-Agent": "Mozilla/5.0"})
+            with _ur.urlopen(req, timeout=25) as resp:
+                raw = resp.read().decode()
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            for line in lines[1:]:          # skip header
+                parts = line.split(",")
+                if len(parts) == 2 and parts[1] not in (".", ""):
+                    try:
+                        rows_desc.append({"period": parts[0], "value": float(parts[1])})
+                    except ValueError:
+                        pass
+            rows_desc.sort(key=lambda r: r["period"], reverse=True)
+            send("  [FRED] OK — {} pts".format(len(rows_desc)))
+        except _ur.HTTPError as e:
+            deny = e.headers.get("x-deny-reason", "")
+            send("  [FRED] HTTPError {} deny={}".format(e.code, deny))
+        except Exception as e:
+            send("  [FRED] {}: {}".format(type(e).__name__, e))
 
-        # Build seasonal bands: group by ISO week number, compute avg/min/max per week
-        from collections import defaultdict
-        week_buckets = defaultdict(list)
-        for row in history_all_asc:
-            try:
-                dt = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
-                week_num = dt.isocalendar()[1]
-                week_buckets[week_num].append(row["value"])
-            except Exception:
-                pass
+    # ── All sources failed ────────────────────────────────────────────────────
+    if not rows_desc:
+        send("  [WARN] All EIA/FRED sources failed — inventory section will be empty")
+        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [],
+                "seasonal_bands": [], "current_year_data": []}
 
-        seasonal_bands = []
-        for wk in sorted(week_buckets.keys()):
-            vals = week_buckets[wk]
-            if len(vals) >= 2:
-                seasonal_bands.append({
-                    "week": wk,
-                    "avg":  round(float(np.mean(vals)), 0),
-                    "min":  round(float(np.min(vals)), 0),
-                    "max":  round(float(np.max(vals)), 0),
+    # ── Process data (rows_desc is newest-first) ──────────────────────────────
+    latest = rows_desc[0]["value"]
+    prev   = rows_desc[1]["value"] if len(rows_desc) > 1 else latest
+    send("  Distillate stocks: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest - prev))
+
+    history_all_asc = list(reversed(rows_desc))   # oldest first
+
+    # Seasonal bands — group by ISO week, need ≥2 years per week for a band
+    week_buckets = defaultdict(list)
+    for row in history_all_asc:
+        try:
+            dt       = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
+            week_num = dt.isocalendar()[1]
+            week_buckets[week_num].append(row["value"])
+        except Exception:
+            pass
+
+    seasonal_bands = []
+    for wk in sorted(week_buckets.keys()):
+        vals = week_buckets[wk]
+        if len(vals) >= 2:
+            seasonal_bands.append({
+                "week": wk,
+                "avg":  round(float(np.mean(vals)), 0),
+                "min":  round(float(np.min(vals)), 0),
+                "max":  round(float(np.max(vals)), 0),
+            })
+
+    # Current-year overlay
+    current_year      = datetime.date.today().year
+    current_year_data = []
+    for row in history_all_asc:
+        try:
+            dt = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
+            if dt.year == current_year:
+                current_year_data.append({
+                    "week":   dt.isocalendar()[1],
+                    "period": row["period"],
+                    "value":  row["value"],
                 })
+        except Exception:
+            pass
 
-        # Current year data for overlay
-        current_year = datetime.date.today().year
-        current_year_data = []
-        for row in history_all_asc:
-            try:
-                dt = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
-                if dt.year == current_year:
-                    current_year_data.append({
-                        "week": dt.isocalendar()[1],
-                        "period": row["period"],
-                        "value": row["value"],
-                    })
-            except Exception:
-                pass
+    send("  Seasonal bands: {} weeks  current-year overlay: {} pts".format(
+        len(seasonal_bands), len(current_year_data)))
 
-        send("  Seasonal bands: {} weeks, current year: {} pts".format(
-            len(seasonal_bands), len(current_year_data)))
-
-        return {
-            "stocks_mbbl":       latest,
-            "wow_change":        latest - prev,
-            "weeks":             history_all[:8],
-            "history":           history_all_asc,
-            "seasonal_bands":    seasonal_bands,
-            "current_year_data": current_year_data,
-        }
-
-    except Exception as e:
-        send("  [WARN] EIA API call failed: {} — {}".format(type(e).__name__, e))
-        return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+    return {
+        "stocks_mbbl":       latest,
+        "wow_change":        latest - prev,
+        "weeks":             rows_desc[:8],        # newest-first, for KPI cards
+        "history":           history_all_asc,      # oldest-first, for charts
+        "seasonal_bands":    seasonal_bands,
+        "current_year_data": current_year_data,
+    }
 
 
 def detect_regime(ho, wti, vix, crack_spread, eia_data):
