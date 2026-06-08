@@ -250,7 +250,7 @@ def fetch_eia_distillate(send=print):
         ("facets[duoarea][]",     "NUS"),      # US Total
         ("sort[0][column]",       "period"),
         ("sort[0][direction]",    "desc"),
-        ("length",                "52"),
+        ("length",                "260"),  # ~5 years of weekly data
     ]
     url = base + "?" + urllib.parse.urlencode(params)
     send("  EIA URL (key redacted): {}".format(url.replace(key, "***")))
@@ -267,26 +267,68 @@ def fetch_eia_distillate(send=print):
         send("  EIA rows returned: {}".format(len(rows)))
 
         if not rows:
-            # Log the full response to help diagnose
             send("  EIA response body: {}".format(str(payload)[:400]))
-            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "seasonal_bands": []}
 
-        # Filter out rows with null/empty values
         valid = [r for r in rows if r.get("value") not in (None, "", "null")]
         if not valid:
             send("  [WARN] EIA returned rows but all values were null")
-            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": []}
+            return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [], "seasonal_bands": []}
 
         latest = float(valid[0]["value"])
         prev   = float(valid[1]["value"]) if len(valid) > 1 else latest
         send("  EIA distillate: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest - prev))
 
-        history = [{"period": r["period"], "value": float(r["value"])} for r in valid]
+        history_all = [{"period": r["period"], "value": float(r["value"])} for r in valid]
+        history_all_asc = list(reversed(history_all))
+
+        # Build seasonal bands: group by ISO week number, compute avg/min/max per week
+        from collections import defaultdict
+        week_buckets = defaultdict(list)
+        for row in history_all_asc:
+            try:
+                dt = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
+                week_num = dt.isocalendar()[1]
+                week_buckets[week_num].append(row["value"])
+            except Exception:
+                pass
+
+        seasonal_bands = []
+        for wk in sorted(week_buckets.keys()):
+            vals = week_buckets[wk]
+            if len(vals) >= 2:
+                seasonal_bands.append({
+                    "week": wk,
+                    "avg":  round(float(np.mean(vals)), 0),
+                    "min":  round(float(np.min(vals)), 0),
+                    "max":  round(float(np.max(vals)), 0),
+                })
+
+        # Current year data for overlay
+        current_year = datetime.date.today().year
+        current_year_data = []
+        for row in history_all_asc:
+            try:
+                dt = datetime.datetime.strptime(row["period"], "%Y-%m-%d").date()
+                if dt.year == current_year:
+                    current_year_data.append({
+                        "week": dt.isocalendar()[1],
+                        "period": row["period"],
+                        "value": row["value"],
+                    })
+            except Exception:
+                pass
+
+        send("  Seasonal bands: {} weeks, current year: {} pts".format(
+            len(seasonal_bands), len(current_year_data)))
+
         return {
-            "stocks_mbbl": latest,
-            "wow_change":  latest - prev,
-            "weeks":       history[:8],
-            "history":     list(reversed(history)),
+            "stocks_mbbl":       latest,
+            "wow_change":        latest - prev,
+            "weeks":             history_all[:8],
+            "history":           history_all_asc,
+            "seasonal_bands":    seasonal_bands,
+            "current_year_data": current_year_data,
         }
 
     except Exception as e:
@@ -445,22 +487,81 @@ def run(send=print):
     tot=sum(v for _,v in raw_drvs) or 1
     drivers=[{"name":n,"value":round(v,2),"pct":round(v/tot*100,1)} for n,v in raw_drvs]
 
-    # Scenarios
+    # Scenarios — dynamic signal-driven drift + VIX-scaled vol
     np.random.seed(42)
     fc_dates=[]
     d=datetime.date.today()
     while len(fc_dates)<14:
         d+=datetime.timedelta(days=1)
         if d.weekday()<5: fc_dates.append(str(d))
-    scenario_defs={"Base":{"drift":0.000,"vol_mult":1.0},"High Demand":{"drift":0.003,"vol_mult":1.2},
-        "Supply Disruption":{"drift":0.007,"vol_mult":1.8},"Stable Market":{"drift":0.001,"vol_mult":0.7},
-        "Recession":{"drift":-0.005,"vol_mult":1.4}}
-    scenario_paths={}
-    for sname,sp in scenario_defs.items():
-        path=[ho]
+
+    # --- Dynamic drift signals ---
+    vix_cur = vix or 20.0
+    crack_cur = crack or 15.0
+    eia_wow = eia_data.get("wow_change") or 0.0
+    seasonal_month = datetime.date.today().month
+    # Crack spread signal: above 20 => bullish drift, below 10 => bearish
+    crack_signal = np.clip((crack_cur - 15.0) / 100.0, -0.002, 0.003)
+    # VIX signal: high VIX => uncertainty/dampened drift
+    vix_signal = np.clip(-(vix_cur - 20.0) / 2000.0, -0.002, 0.001)
+    # EIA inventory signal: big draw => bullish, big build => bearish
+    eia_signal = np.clip(-eia_wow / 5_000_000.0, -0.002, 0.002)
+    # Seasonal signal: heating season (Nov–Mar) => bullish
+    seasonal_signal = 0.002 if seasonal_month in (11,12,1,2,3) else (-0.001 if seasonal_month in (5,6,7,8) else 0.0)
+    # Composite base drift from all signals
+    base_dynamic_drift = crack_signal + vix_signal + eia_signal + seasonal_signal
+
+    # --- VIX-scaled volatility multiplier ---
+    # Rolling VIX mean from VIX history if available, else use current
+    vix_hist = vix_d.get("history", [])
+    if len(vix_hist) >= 20:
+        vix_rolling_mean = float(np.mean([r["price"] for r in vix_hist[-20:]]))
+    else:
+        vix_rolling_mean = vix_cur
+    # VIX multiplier: current VIX relative to its rolling mean
+    vix_vol_mult = float(np.clip(vix_cur / max(vix_rolling_mean, 10.0), 0.5, 2.5))
+
+    # Scenario definitions: base drift is dynamic; each scenario has a bias on top
+    scenario_defs = {
+        "Base": {
+            "drift_bias": 0.000, "vol_mult_base": 1.0,
+            "label": "Signals: crack={:.2f}, VIX={:.1f}, seasonal={}".format(
+                crack_cur, vix_cur, "peak" if seasonal_month in (11,12,1,2,3) else "off-peak"),
+        },
+        "High Demand": {
+            "drift_bias": +0.003, "vol_mult_base": 1.2,
+            "label": "Demand surge: inventory draws, cold-snap premium",
+        },
+        "Supply Disruption": {
+            "drift_bias": +0.007, "vol_mult_base": 1.8,
+            "label": "Refinery outage or port disruption; crack spike",
+        },
+        "Stable Market": {
+            "drift_bias": -0.001, "vol_mult_base": 0.6,
+            "label": "Low VIX, balanced inventory, mild seasonal",
+        },
+        "Recession": {
+            "drift_bias": -0.006, "vol_mult_base": 1.4,
+            "label": "Demand destruction; VIX-driven vol expansion",
+        },
+    }
+    scenario_paths = {}
+    for sname, sp in scenario_defs.items():
+        total_drift = base_dynamic_drift + sp["drift_bias"]
+        total_vol   = sig_daily * sp["vol_mult_base"] * vix_vol_mult
+        path = [ho]
         for _ in range(14):
-            path.append(round(float(path[-1]*np.exp(np.random.normal(sp["drift"],sig_daily*sp["vol_mult"]))),4))
-        scenario_paths[sname]={"dates":fc_dates,"prices":path[1:],"final":round(path[-1],4)}
+            path.append(round(float(path[-1] * np.exp(np.random.normal(total_drift, total_vol))), 4))
+        scenario_paths[sname] = {
+            "dates":       fc_dates,
+            "prices":      path[1:],
+            "final":       round(path[-1], 4),
+            "total_drift": round(total_drift * 252 * 100, 2),   # annualised %, for display
+            "vol_ann":     round(total_vol * np.sqrt(252) * 100, 2),
+            "label":       sp["label"],
+        }
+    send("  Scenarios built (dynamic drift base={:.4f}, VIX mult={:.2f})".format(
+        base_dynamic_drift, vix_vol_mult))
 
     # Regional prices
     regional_prices=[
@@ -503,6 +604,15 @@ def run(send=print):
         "drivers":drivers,"scenario_paths":scenario_paths,"regional_prices":regional_prices,
         "ev_by_horizon":ev_by_horizon,"var_es":{"1M":var_es_1m,"3M":var_es_3m},
         "crack_history":crack_history,"run_dir":run_dir,
+        "scenario_signals":{
+            "base_dynamic_drift_ann":round(base_dynamic_drift*252*100,2),
+            "vix_vol_mult":round(vix_vol_mult,3),
+            "vix_rolling_mean":round(vix_rolling_mean,2),
+            "crack_signal_ann":round(crack_signal*252*100,2),
+            "vix_signal_ann":round(vix_signal*252*100,2),
+            "eia_signal_ann":round(eia_signal*252*100,2),
+            "seasonal_signal_ann":round(seasonal_signal*252*100,2),
+        },
     }
 
 if __name__=="__main__":
