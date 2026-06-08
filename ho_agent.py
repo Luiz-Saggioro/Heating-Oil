@@ -563,16 +563,43 @@ def run(send=print):
     send("  Scenarios built (dynamic drift base={:.4f}, VIX mult={:.2f})".format(
         base_dynamic_drift, vix_vol_mult))
 
-    # Regional prices
+    # Regional prices — US
     regional_prices=[
-        {"region":"New England","state":"CT","lat":41.6,"lon":-72.7,"price":round(ho*1.18,4),"factor":"High demand, port logistics"},
-        {"region":"Mid-Atlantic","state":"NY","lat":40.7,"lon":-74.0,"price":round(ho*1.12,4),"factor":"Urban distribution premium"},
-        {"region":"Southeast","state":"GA","lat":33.7,"lon":-84.4,"price":round(ho*0.97,4),"factor":"Mild climate, lower demand"},
-        {"region":"Midwest","state":"IL","lat":41.8,"lon":-87.6,"price":round(ho*1.02,4),"factor":"Inland logistics cost"},
-        {"region":"Gulf Coast","state":"TX","lat":29.7,"lon":-95.4,"price":round(ho*0.91,4),"factor":"Refinery proximity"},
-        {"region":"West Coast","state":"CA","lat":34.0,"lon":-118.2,"price":round(ho*1.24,4),"factor":"State taxes + CARB spec"},
-        {"region":"Pacific NW","state":"WA","lat":47.6,"lon":-122.3,"price":round(ho*1.15,4),"factor":"Remote supply chain"},
-        {"region":"Mountain","state":"CO","lat":39.7,"lon":-104.9,"price":round(ho*1.07,4),"factor":"Altitude distribution cost"},
+        {"country":"US","region":"New England","state":"CT","lat":41.6,"lon":-72.7,"price":round(ho*1.18,4),"factor":"High demand, port logistics"},
+        {"country":"US","region":"Mid-Atlantic","state":"NY","lat":40.7,"lon":-74.0,"price":round(ho*1.12,4),"factor":"Urban distribution premium"},
+        {"country":"US","region":"Southeast","state":"GA","lat":33.7,"lon":-84.4,"price":round(ho*0.97,4),"factor":"Mild climate, lower demand"},
+        {"country":"US","region":"Midwest","state":"IL","lat":41.8,"lon":-87.6,"price":round(ho*1.02,4),"factor":"Inland logistics cost"},
+        {"country":"US","region":"Gulf Coast","state":"TX","lat":29.7,"lon":-95.4,"price":round(ho*0.91,4),"factor":"Refinery proximity"},
+        {"country":"US","region":"West Coast","state":"CA","lat":34.0,"lon":-118.2,"price":round(ho*1.24,4),"factor":"State taxes + CARB spec"},
+        {"country":"US","region":"Pacific NW","state":"WA","lat":47.6,"lon":-122.3,"price":round(ho*1.15,4),"factor":"Remote supply chain"},
+        {"country":"US","region":"Mountain","state":"CO","lat":39.7,"lon":-104.9,"price":round(ho*1.07,4),"factor":"Altitude distribution cost"},
+    ]
+
+    # Brazil diesel/distillate regional prices ($/gal equivalent, Petrobras-referenced)
+    # Brazil uses Petrobras refinery gate + state ICMS tax (avg 12-17%) + distribution margin
+    # Base price anchored to WTI-derived Petrobras price; state multipliers reflect ICMS + logistics
+    brl_base = ho * 0.98  # Petrobras refinery gate roughly tracks US Gulf Coast minus export cost
+    brazil_regional_prices = [
+        {"country":"BR","region":"São Paulo","state":"SP","lat":-23.5,"lon":-46.6,
+         "price":round(brl_base*1.14,4),"factor":"High ICMS (18%), large distribution network"},
+        {"country":"BR","region":"Rio de Janeiro","state":"RJ","lat":-22.9,"lon":-43.2,
+         "price":round(brl_base*1.16,4),"factor":"Urban premium, port logistics costs"},
+        {"country":"BR","region":"Minas Gerais","state":"MG","lat":-19.9,"lon":-43.9,
+         "price":round(brl_base*1.11,4),"factor":"Inland distribution, moderate ICMS"},
+        {"country":"BR","region":"Bahia","state":"BA","lat":-12.9,"lon":-38.4,
+         "price":round(brl_base*1.09,4),"factor":"Refinery proximity (RLAM), lower logistics"},
+        {"country":"BR","region":"Paraná","state":"PR","lat":-25.4,"lon":-49.3,
+         "price":round(brl_base*1.10,4),"factor":"REPAR refinery nearby, soy belt logistics"},
+        {"country":"BR","region":"Amazonas","state":"AM","lat":-3.1,"lon":-60.0,
+         "price":round(brl_base*1.31,4),"factor":"Remote access, river-only supply chain"},
+        {"country":"BR","region":"Pará","state":"PA","lat":-1.5,"lon":-48.5,
+         "price":round(brl_base*1.22,4),"factor":"Amazon basin, limited road infrastructure"},
+        {"country":"BR","region":"Rio Grande do Sul","state":"RS","lat":-30.0,"lon":-51.2,
+         "price":round(brl_base*1.12,4),"factor":"Southern border, REFAP refinery"},
+        {"country":"BR","region":"Ceará","state":"CE","lat":-3.7,"lon":-38.5,
+         "price":round(brl_base*1.18,4),"factor":"Northeast — distance from refineries"},
+        {"country":"BR","region":"Mato Grosso","state":"MT","lat":-15.6,"lon":-56.1,
+         "price":round(brl_base*1.19,4),"factor":"Agricultural interior, long haul distance"},
     ]
 
     ev_by_horizon  = compute_ev_by_horizon(prob_table)
@@ -602,6 +629,7 @@ def run(send=print):
         "custom_bands":custom_by_horizon,"scenario_weights":weights,"summary":summary,
         "ci_bands":ci_bands,"vol_heatmap":vol_heatmap,"lognorm_shape":lognorm_shape,
         "drivers":drivers,"scenario_paths":scenario_paths,"regional_prices":regional_prices,
+        "brazil_regional_prices":brazil_regional_prices,
         "ev_by_horizon":ev_by_horizon,"var_es":{"1M":var_es_1m,"3M":var_es_3m},
         "crack_history":crack_history,"run_dir":run_dir,
         "scenario_signals":{
