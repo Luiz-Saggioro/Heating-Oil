@@ -721,8 +721,10 @@ def render_eia_deep_dive(result):
             )
         else:
             st.warning(
-                "**EIA API returned no data.** The key was found but the request failed — "
-                "check the Run Log at the bottom of the page for the specific error."
+                "**EIA inventory data unavailable.** The API key was found but all three sources "
+                "failed (EIA v2 → EIA v1 → FRED). Check the **Run Log** below for per-source "
+                "error details. Common causes: EIA API outage, key expired, or network restriction. "
+                "The rest of the dashboard is unaffected."
             )
         return
 
