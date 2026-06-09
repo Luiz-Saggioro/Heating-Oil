@@ -379,7 +379,7 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
                 st.markdown("</div>",unsafe_allow_html=True)
 
 
-# ── ④ VOLATILITY (line chart, y-axis 0–50, no histogram) ─────────────────────
+# ── ④ VOLATILITY (dynamic y-axis + period filter) ────────────────────────────
 def render_volatility(result):
     section("04","VOLATILITY","Rolling 10-day annualised vol — line chart")
     vh = result.get("vol_heatmap",[])
@@ -387,20 +387,41 @@ def render_volatility(result):
         st.info("Insufficient history for volatility (need > 11 trading days)")
         return
 
-    df = pd.DataFrame(vh)
-    avg = df["vol"].mean()
+    df_full = pd.DataFrame(vh)
+    df_full["date"] = pd.to_datetime(df_full["date"])
 
+    # ── Period selector ───────────────────────────────────────────────────────
+    period_opts = ["1M","3M","6M","1Y"]
+    period_days = {"1M":30,"3M":90,"6M":180,"1Y":365}
+    period = st.radio("Volatility period",period_opts,index=1,
+                      horizontal=True,key="vol_period_radio")
+    try:    validate_enum(sanitize_str(period),set(period_opts))
+    except ValueError: period="3M"
+
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=period_days[period])
+    df     = df_full[df_full["date"]>=cutoff].copy()
+    if df.empty: df = df_full.tail(10).copy()
+
+    # ── Dynamic y-axis: ceiling = max+5%, floor = min-15% ────────────────────
+    v_max   = float(df["vol"].max())
+    v_min   = float(df["vol"].min())
+    y_upper = round(v_max * 1.05, 2)
+    y_lower = round(v_min * 0.85, 2)
+    avg     = float(df["vol"].mean())
+
+    # ── Chart ─────────────────────────────────────────────────────────────────
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines+markers",
         line=dict(color="#f5a623" if result.get("agent")=="ho" else "#00d4ff",width=2),
         marker=dict(size=4),name="Rolling 10d Ann. Vol",
-        hovertemplate="%{x}: %{y:.1f}%<extra></extra>"))
+        hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra></extra>"))
     fig.add_hline(y=avg,line=dict(color="#ffd060",width=1,dash="dash"),
         annotation_text=f"Avg {avg:.1f}%",annotation_font=dict(color="#ffd060",size=9))
     fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=280,
-        title=dict(text="Rolling 10-Day Annualised Volatility",font=dict(size=11,color="#c8d8ec")),
+        title=dict(text=f"Rolling 10-Day Annualised Volatility — {period}",
+                   font=dict(size=11,color="#c8d8ec")),
         xaxis=dict(title="",type="date"),
-        yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[0,50]),
+        yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper]),
         showlegend=False)
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
 
