@@ -54,6 +54,7 @@ CUSTOM_BANDS = [
     ("P(<1.80)",     -np.inf, 1.80    ),
 ]
 
+
 def _eia_key():
     """
     Read EIA_API_KEY from every possible source, in priority order:
@@ -89,7 +90,8 @@ def _eia_key():
 
     return ""
 
-# ── Probability Models ─────────────────────────────────────────────────────────
+
+# ── Probability Models ────────────────────────────────────────────────────────
 
 def lognormal_probs(current, returns, horizon_days):
     from scipy.stats import norm
@@ -216,12 +218,15 @@ def build_crack_spread_history(ho_history, wti_history):
 
 def fetch_eia_distillate(send=print):
     """
-    Fetch weekly US distillate fuel oil stocks from EIA API v2.
+    Fetch weekly US distillate fuel oil stocks from EIA API.
 
-    Waterfall fetch strategy:
-      1. EIA v2 API  — raw brackets in URL (NOT urlencode — EIA rejects %5B%5D)
-      2. EIA v1 series API — older endpoint, broader key compatibility
-      3. FRED CSV   — WDISTUS series mirrors EIA weekly distillate data
+    Waterfall fetch strategy (6 paths — urllib first, requests fallback per source):
+      1.  EIA v2 (urllib)   — raw brackets in URL (EIA rejects %5B%5D)
+      1b. EIA v2 (requests) — SSL/cert fallback for Streamlit Cloud
+      2.  EIA v1 (urllib)   — legacy series endpoint, broader key compatibility
+      2b. EIA v1 (requests) — SSL/cert fallback
+      3.  FRED CSV (urllib) — WDISTUS mirrors EIA weekly distillate
+      3b. FRED CSV (requests) — SSL/cert fallback
 
     Product: EPD2F (Distillate Fuel Oil, No. 2), Area: NUS (US Total)
     """
@@ -242,7 +247,6 @@ def fetch_eia_distillate(send=print):
 
     # ── URL builder: keeps brackets UNENCODED (EIA v2 rejects %5B%5D) ─────────
     def _eia_v2_url(n_rows=260):
-        # Only quote the values, never the keys — brackets must stay literal
         pairs = [
             ("api_key",            key),
             ("frequency",          "weekly"),
@@ -271,7 +275,7 @@ def fetch_eia_distillate(send=print):
         send("  EIA v2 valid rows: {}".format(len(valid)))
         return [{"period": r["period"], "value": float(r["value"])} for r in valid]
 
-    # ── Source 1: EIA v2 API ──────────────────────────────────────────────────
+    # ── Source 1: EIA v2 via urllib ───────────────────────────────────────────
     rows_desc = []
     for n_rows in (260, 52):   # try 5-year first, fall back to 1-year
         url = _eia_v2_url(n_rows)
@@ -295,7 +299,28 @@ def fetch_eia_distillate(send=print):
         except Exception as e:
             send("  [EIA v2] {}: {}".format(type(e).__name__, e))
 
-    # ── Source 2: EIA v1 series API ───────────────────────────────────────────
+    # ── Source 1b: EIA v2 via requests (Streamlit Cloud SSL fallback) ─────────
+    if not rows_desc and _REQUESTS_OK:
+        send("  [EIA v2-req] Retrying EIA v2 with requests library ...")
+        for n_rows in (260, 52):
+            url = _eia_v2_url(n_rows)
+            send("  [EIA v2-req] GET {} rows".format(n_rows))
+            try:
+                resp = _requests.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                    timeout=25,
+                    verify=True,
+                )
+                resp.raise_for_status()
+                rows_desc = _parse_v2(resp.json(), send)
+                if rows_desc:
+                    send("  [EIA v2-req] OK — {} data points".format(len(rows_desc)))
+                    break
+            except Exception as e:
+                send("  [EIA v2-req] {}: {}".format(type(e).__name__, e))
+
+    # ── Source 2: EIA v1 series API via urllib ────────────────────────────────
     if not rows_desc:
         send("  [EIA v1] Trying legacy series API ...")
         # PET.WDISTUS1.W = Weekly US Distillate Stocks, Mbbl
@@ -333,7 +358,37 @@ def fetch_eia_distillate(send=print):
         except Exception as e:
             send("  [EIA v1] {}: {}".format(type(e).__name__, e))
 
-    # ── Source 3: FRED CSV (WDISTUS mirrors EIA weekly distillate) ────────────
+    # ── Source 2b: EIA v1 via requests (Streamlit Cloud SSL fallback) ─────────
+    if not rows_desc and _REQUESTS_OK:
+        send("  [EIA v1-req] Retrying EIA v1 with requests library ...")
+        v1_url = ("https://api.eia.gov/series/"
+                  "?api_key={}&series_id=PET.WDISTUS1.W&num=260".format(key))
+        try:
+            resp = _requests.get(
+                v1_url,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                timeout=25,
+                verify=True,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            series = payload.get("series", [])
+            if series and series[0].get("data"):
+                for pt in series[0]["data"]:
+                    try:
+                        dt = datetime.datetime.strptime(str(pt[0]), "%Y%m%d")
+                        rows_desc.append({"period": dt.strftime("%Y-%m-%d"),
+                                          "value":  float(pt[1])})
+                    except Exception:
+                        pass
+                rows_desc.sort(key=lambda r: r["period"], reverse=True)
+                send("  [EIA v1-req] OK — {} pts".format(len(rows_desc)))
+            else:
+                send("  [EIA v1-req] No series data in response")
+        except Exception as e:
+            send("  [EIA v1-req] {}: {}".format(type(e).__name__, e))
+
+    # ── Source 3: FRED CSV via urllib (WDISTUS mirrors EIA weekly distillate) ──
     if not rows_desc:
         send("  [FRED] Trying FRED WDISTUS series as last resort ...")
         fred_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WDISTUS"
@@ -357,6 +412,31 @@ def fetch_eia_distillate(send=print):
             send("  [FRED] HTTPError {} deny={}".format(e.code, deny))
         except Exception as e:
             send("  [FRED] {}: {}".format(type(e).__name__, e))
+
+    # ── Source 3b: FRED CSV via requests (Streamlit Cloud SSL fallback) ────────
+    if not rows_desc and _REQUESTS_OK:
+        send("  [FRED-req] Retrying FRED with requests library ...")
+        fred_url = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=WDISTUS"
+        try:
+            resp = _requests.get(
+                fred_url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=25,
+                verify=True,
+            )
+            resp.raise_for_status()
+            lines = [l.strip() for l in resp.text.splitlines() if l.strip()]
+            for line in lines[1:]:
+                parts = line.split(",")
+                if len(parts) == 2 and parts[1] not in (".", ""):
+                    try:
+                        rows_desc.append({"period": parts[0], "value": float(parts[1])})
+                    except ValueError:
+                        pass
+            rows_desc.sort(key=lambda r: r["period"], reverse=True)
+            send("  [FRED-req] OK — {} pts".format(len(rows_desc)))
+        except Exception as e:
+            send("  [FRED-req] {}: {}".format(type(e).__name__, e))
 
     # ── All sources failed ────────────────────────────────────────────────────
     if not rows_desc:
@@ -579,33 +659,25 @@ def run(send=print):
         d+=datetime.timedelta(days=1)
         if d.weekday()<5: fc_dates.append(str(d))
 
-    # --- Dynamic drift signals ---
+    # Dynamic drift signals
     vix_cur = vix or 20.0
     crack_cur = crack or 15.0
     eia_wow = eia_data.get("wow_change") or 0.0
     seasonal_month = datetime.date.today().month
-    # Crack spread signal: above 20 => bullish drift, below 10 => bearish
-    crack_signal = np.clip((crack_cur - 15.0) / 100.0, -0.002, 0.003)
-    # VIX signal: high VIX => uncertainty/dampened drift
-    vix_signal = np.clip(-(vix_cur - 20.0) / 2000.0, -0.002, 0.001)
-    # EIA inventory signal: big draw => bullish, big build => bearish
-    eia_signal = np.clip(-eia_wow / 5_000_000.0, -0.002, 0.002)
-    # Seasonal signal: heating season (Nov–Mar) => bullish
+    crack_signal    = np.clip((crack_cur - 15.0) / 100.0, -0.002, 0.003)
+    vix_signal      = np.clip(-(vix_cur - 20.0) / 2000.0, -0.002, 0.001)
+    eia_signal      = np.clip(-eia_wow / 5_000_000.0, -0.002, 0.002)
     seasonal_signal = 0.002 if seasonal_month in (11,12,1,2,3) else (-0.001 if seasonal_month in (5,6,7,8) else 0.0)
-    # Composite base drift from all signals
     base_dynamic_drift = crack_signal + vix_signal + eia_signal + seasonal_signal
 
-    # --- VIX-scaled volatility multiplier ---
-    # Rolling VIX mean from VIX history if available, else use current
+    # VIX-scaled volatility multiplier
     vix_hist = vix_d.get("history", [])
     if len(vix_hist) >= 20:
         vix_rolling_mean = float(np.mean([r["price"] for r in vix_hist[-20:]]))
     else:
         vix_rolling_mean = vix_cur
-    # VIX multiplier: current VIX relative to its rolling mean
     vix_vol_mult = float(np.clip(vix_cur / max(vix_rolling_mean, 10.0), 0.5, 2.5))
 
-    # Scenario definitions: base drift is dynamic; each scenario has a bias on top
     scenario_defs = {
         "Base": {
             "drift_bias": 0.000, "vol_mult_base": 1.0,
@@ -640,7 +712,7 @@ def run(send=print):
             "dates":       fc_dates,
             "prices":      path[1:],
             "final":       round(path[-1], 4),
-            "total_drift": round(total_drift * 252 * 100, 2),   # annualised %, for display
+            "total_drift": round(total_drift * 252 * 100, 2),
             "vol_ann":     round(total_vol * np.sqrt(252) * 100, 2),
             "label":       sp["label"],
         }
@@ -660,9 +732,7 @@ def run(send=print):
     ]
 
     # Brazil diesel/distillate regional prices ($/gal equivalent, Petrobras-referenced)
-    # Brazil uses Petrobras refinery gate + state ICMS tax (avg 12-17%) + distribution margin
-    # Base price anchored to WTI-derived Petrobras price; state multipliers reflect ICMS + logistics
-    brl_base = ho * 0.98  # Petrobras refinery gate roughly tracks US Gulf Coast minus export cost
+    brl_base = ho * 0.98
     brazil_regional_prices = [
         {"country":"BR","region":"São Paulo","state":"SP","lat":-23.5,"lon":-46.6,
          "price":round(brl_base*1.14,4),"factor":"High ICMS (18%), large distribution network"},
@@ -726,6 +796,7 @@ def run(send=print):
             "seasonal_signal_ann":round(seasonal_signal*252*100,2),
         },
     }
+
 
 if __name__=="__main__":
     result=run()
