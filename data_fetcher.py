@@ -12,6 +12,10 @@ History (daily OHLC for chart + vol model):
   2. Yahoo Finance v8 JSON — secondary
   3. Synthetic fallback     — CLEARLY FLAGGED, never silent
 
+Intraday history (1h / 1d intervals for short-term chart):
+  1. yfinance .history()   — primary, supports 1h up to 730d lookback
+  2. Synthetic fallback     — CLEARLY FLAGGED, never silent
+
 All data is flagged with its source and age in the run log.
 """
 
@@ -75,7 +79,6 @@ def _yfinance_live(name):
     info = t.fast_info
     price = getattr(info, "last_price", None)
     if price is None:
-        # fallback within yfinance: use previous_close
         price = getattr(info, "previous_close", None)
     if price is None or not _sane(name, price):
         raise ValueError(f"yfinance returned invalid price {price} for {name}")
@@ -86,18 +89,12 @@ def _yfinance_history(name, days):
     """Fetch real daily OHLC history via yfinance."""
     import yfinance as yf
     ticker_sym = TICKER_MAP[name][0]
-    # Add buffer for weekends/holidays
     period_days = days + 30
-    if period_days <= 30:
-        period = "1mo"
-    elif period_days <= 90:
-        period = "3mo"
-    elif period_days <= 180:
-        period = "6mo"
-    elif period_days <= 365:
-        period = "1y"
-    else:
-        period = "2y"
+    if period_days <= 30:   period = "1mo"
+    elif period_days <= 90: period = "3mo"
+    elif period_days <= 180:period = "6mo"
+    elif period_days <= 365:period = "1y"
+    else:                   period = "2y"
     t   = yf.Ticker(ticker_sym)
     df  = t.history(period=period, interval="1d", auto_adjust=True)
     if df is None or df.empty:
@@ -111,6 +108,94 @@ def _yfinance_history(name, days):
     if len(rows) < 5:
         raise ValueError(f"yfinance history too short for {name}: {len(rows)} rows")
     return rows[-days:]
+
+
+# ── INTRADAY HISTORY (1h / 1d intervals) ─────────────────────────────────────
+
+def _yfinance_intraday(name, interval, lookback_days):
+    """
+    Fetch intraday OHLC via yfinance.
+    interval:      '1h' (hourly) | '1d' (daily, used for short daily views)
+    lookback_days: calendar days to look back; Yahoo caps 1h at ~730d.
+    Returns list of {datetime, price} dicts, newest last.
+    datetime key is ISO string: 'YYYY-MM-DDTHH:MM' for 1h, 'YYYY-MM-DD' for 1d.
+    """
+    import yfinance as yf
+    ticker_sym = TICKER_MAP[name][0]
+    days_use   = min(lookback_days, 729)
+    if days_use <= 7:     period = "7d"
+    elif days_use <= 30:  period = "1mo"
+    elif days_use <= 60:  period = "60d"
+    elif days_use <= 90:  period = "3mo"
+    elif days_use <= 180: period = "6mo"
+    elif days_use <= 365: period = "1y"
+    else:                 period = "2y"
+    t  = yf.Ticker(ticker_sym)
+    df = t.history(period=period, interval=interval, auto_adjust=True)
+    if df is None or df.empty:
+        raise ValueError(f"yfinance intraday returned empty for {name} interval={interval}")
+    rows = []
+    for idx, row in df.iterrows():
+        close = float(row["Close"])
+        if _sane(name, close):
+            ts_str = (idx.strftime("%Y-%m-%dT%H:%M")
+                      if interval == "1h" else str(idx.date()))
+            rows.append({"datetime": ts_str, "price": round(close, 4)})
+    if len(rows) < 2:
+        raise ValueError(f"yfinance intraday too short for {name}: {len(rows)} rows")
+    # Trim to requested lookback
+    max_pts = lookback_days * 24 if interval == "1h" else lookback_days
+    return rows[-max_pts:]
+
+
+def _synthetic_intraday(name, interval, lookback_days, send=print):
+    """
+    Last-resort synthetic intraday — always logs a loud warning.
+    Returned rows carry 'synthetic': True so the UI can warn the user.
+    """
+    import numpy as np
+    send(f"  *** WARNING: SYNTHETIC intraday history for {name} [{interval}]. NOT real data. ***")
+    bases = {"HO": 3.50, "WTI": 75.0, "Brent": 79.0,
+             "RBOB": 2.40, "DXY": 103.5, "VIX": 18.0}
+    vols  = {"HO": 0.003, "WTI": 0.003, "Brent": 0.003,
+             "RBOB": 0.003, "DXY": 0.001, "VIX": 0.008}
+    base = bases.get(name, 50.0)
+    vol  = vols.get(name, 0.003)
+    rng  = numpy_rng = __import__("numpy").random.default_rng(
+        seed=int(datetime.datetime.now().strftime("%Y%m%d%H")))
+    now  = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
+    step = (datetime.timedelta(hours=1)
+            if interval == "1h" else datetime.timedelta(days=1))
+    total_steps = lookback_days * (24 if interval == "1h" else 1)
+    rows, price = [], base
+    cur = now - step * total_steps
+    while cur <= now:
+        if cur.weekday() < 5:
+            import numpy as np
+            price = max(0.5, price * (1 + float(rng.normal(0, vol))))
+            ts_str = (cur.strftime("%Y-%m-%dT%H:%M")
+                      if interval == "1h" else str(cur.date()))
+            rows.append({"datetime": ts_str, "price": round(price, 4), "synthetic": True})
+        cur += step
+    return rows
+
+
+def fetch_intraday_history(name, interval="1h", lookback_days=7, send=print):
+    """
+    Fetch short-term intraday history for the price chart.
+    interval:      '1h' | '1d'
+    lookback_days: calendar days to look back
+    Returns (rows, is_synthetic).
+    rows is a list of {datetime, price} dicts; datetime is an ISO string.
+    """
+    try:
+        rows = _yfinance_intraday(name, interval, lookback_days)
+        send(f"  Intraday {name} [{interval}]: {len(rows)} pts "
+             f"({rows[0]['datetime']} → {rows[-1]['datetime']})")
+        return rows, False
+    except Exception as e:
+        send(f"  [WARN] Intraday {name} [{interval}] failed: {e} — using synthetic")
+        return _synthetic_intraday(name, interval, lookback_days, send=send), True
 
 
 # ── SOURCE 2: Yahoo Finance v8 JSON (direct, no library) ─────────────────────
@@ -143,7 +228,7 @@ def _yahoo_v8_history(name, days):
     )
     raw  = _get(url, extra={"Referer": "https://finance.yahoo.com/"})
     data = json.loads(raw)
-    result    = data["chart"]["result"][0]
+    result     = data["chart"]["result"][0]
     timestamps = result.get("timestamp", [])
     closes     = result["indicators"]["quote"][0].get("close", [])
     rows = []
@@ -259,13 +344,12 @@ def fetch_history(name, days=365, send=print):
             send(f"  History {label} failed for {name}: {e}")
             time.sleep(0.2)
 
-    # All real sources failed — use synthetic but flag it clearly
     return _synthetic_history(name, days, send=send)
 
 
 def fetch_all(names=None, send=print, history_days=365):
     """
-    Fetch live prices + history for all tickers.
+    Fetch live prices + daily history for all tickers.
     Returns dict: name -> {current, dt, source, history, returns, is_synthetic}
     """
     import numpy as np
@@ -313,10 +397,10 @@ def fetch_all(names=None, send=print, history_days=365):
 
 def _fmt_age(delta):
     secs = int(delta.total_seconds())
-    if secs < 0:   return "unknown"
-    if secs < 60:  return f"{secs}s"
+    if secs < 0:    return "unknown"
+    if secs < 60:   return f"{secs}s"
     if secs < 3600: return f"{secs//60}m"
-    if secs < 86400: return f"{secs//3600}h"
+    if secs < 86400:return f"{secs//3600}h"
     return f"{secs//86400}d"
 
 
@@ -330,3 +414,9 @@ if __name__ == "__main__":
         dt_str = d["dt"].strftime("%Y-%m-%d %H:%M") if d["dt"] else "?"
         print(f"  {name:8s}  {d['current']:>10.4f}  {dt_str}  [{d['source']}]  "
               f"history={len(d['history'])}pts{synth}")
+
+    print("\n--- INTRADAY TEST ---")
+    rows, synth = fetch_intraday_history("HO", interval="1h", lookback_days=7)
+    print(f"  HO 1h: {len(rows)} pts  synthetic={synth}")
+    if rows:
+        print(f"  First: {rows[0]}  Last: {rows[-1]}")
