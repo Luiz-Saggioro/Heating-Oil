@@ -13,6 +13,7 @@ import plotly.io as pio
 from plotly.subplots import make_subplots
 import datetime
 import os
+import data_fetcher as _df
 
 # Load .env if present (local dev)
 try:
@@ -191,7 +192,7 @@ def interp_line(start,end,n):
 
 def _pc(key): return f"chart_{key}"
 
-# ── ① SNAPSHOT (renamed from KPI Snapshot; no Retail/Margin for HO) ──────────
+# ── ① SNAPSHOT ────────────────────────────────────────────────────────────────
 def render_snapshot(result, agent):
     section("01", "SNAPSHOT")
     ho = agent=="ho"
@@ -228,15 +229,81 @@ def render_snapshot(result, agent):
 
 # ── ② PRICE HISTORY ──────────────────────────────────────────────────────────
 def render_price_history(result, agent):
-    """Price history — dynamic y-axis, period selector, synthetic data warning."""
-    section("02", "PRICE HISTORY", "Select time period below")
-    ho   = agent=="ho"
-    hist = result.get("history",[])
+    """
+    Price history — short-term (1H / 1D / 1W) priority, with longer periods available.
+    Intraday periods (1H, 1D, 1W) call data_fetcher.fetch_intraday_history() live.
+    Longer periods (1M and above) use the daily history cached in result.
+    Dynamic y-axis, period-aware MA window, synthetic data warning.
+    """
+    section("02", "PRICE HISTORY", "Short-term periods use live intraday fetch")
+    ho          = agent == "ho"
+    daily_hist  = result.get("history", [])
+    ticker_name = "HO" if ho else "WTI"
+    color       = "#f5a623" if ho else "#00d4ff"
+    fill_rgba   = "245,166,35" if ho else "0,212,255"
 
-    # Warn loudly if data is synthetic (all real sources failed)
-    is_synthetic = result.get("is_synthetic_history", False)
-    if not is_synthetic:
-        is_synthetic = any(r.get("synthetic") for r in hist)
+    # Period options — short-term first per stakeholder priority
+    PERIOD_OPTS  = ["1 Hour", "1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
+    INTRADAY_SET = {"1 Hour", "1 Day", "1 Week"}
+
+    period = st.radio("Period", PERIOD_OPTS, horizontal=True, index=2, key="period_radio")
+    period_s = sanitize_str(period)
+    try:
+        validate_enum(period_s, set(PERIOD_OPTS))
+    except ValueError:
+        period_s = "1 Week"
+
+    is_synthetic = False
+
+    # ── Intraday path (1H / 1D / 1W) ─────────────────────────────────────────
+    if period_s in INTRADAY_SET:
+        # Map each period to (yfinance interval, calendar lookback days, max points to show)
+        intraday_cfg = {
+            "1 Hour": ("1h",  2,  60),   # 1h bars, 2d lookback, last 60 bars ≈ 1 session
+            "1 Day":  ("1h",  7,  168),  # 1h bars, 7d lookback, full 7d
+            "1 Week": ("1h",  7,  168),  # 1h bars, 7d lookback, full week
+        }
+        interval, lookback, max_pts = intraday_cfg[period_s]
+        rows, is_synthetic = _df.fetch_intraday_history(
+            ticker_name, interval=interval, lookback_days=lookback
+        )
+        rows = rows[-max_pts:]
+
+        labels = [r["datetime"] for r in rows]
+        prices = [float(r["price"]) for r in rows]
+
+        # x-axis tick format depends on zoom level
+        tick_fmt   = "%H:%M" if period_s == "1 Hour" else "%b %d %H:%M"
+        xaxis_cfg  = dict(
+            type="date",
+            tickformat=tick_fmt,
+            rangeslider=dict(visible=True, bgcolor="#07090f"),
+        )
+        ma_n = min(6, max(1, len(prices) // 4))
+
+    # ── Daily path (1M and longer) ────────────────────────────────────────────
+    else:
+        cutoff_map  = {"1 Month": 30, "3 Months": 90, "6 Months": 180,
+                       "1 Year": 365, "All": 99999}
+        cutoff_days = cutoff_map.get(period_s, 90)
+        cutoff_date = datetime.date.today() - datetime.timedelta(days=cutoff_days)
+        filtered    = [r for r in daily_hist if str(r["date"]) >= str(cutoff_date)]
+        if len(filtered) < 2:
+            filtered = daily_hist[-10:]
+
+        labels = [r["date"] for r in filtered]
+        prices = [float(r["price"]) for r in filtered]
+
+        # Inherit synthetic flag from agent result for daily data
+        is_synthetic = (result.get("is_synthetic_history", False)
+                        or any(r.get("synthetic") for r in filtered))
+        xaxis_cfg = dict(
+            type="date",
+            rangeslider=dict(visible=True, bgcolor="#07090f"),
+        )
+        ma_n = min(20, max(1, len(prices) // 2)) if ho else min(7, max(1, len(prices) // 2))
+
+    # ── Synthetic warning ─────────────────────────────────────────────────────
     if is_synthetic:
         st.error(
             "**DATA WARNING: Price history is SYNTHETIC (simulated) — all live data sources "
@@ -244,52 +311,45 @@ def render_price_history(result, agent):
             "Check the Run Log at the bottom of the page for details on which sources failed."
         )
 
-    if len(hist)<2:
-        st.info("Not enough history data yet.")
+    if len(prices) < 2:
+        st.info("Not enough history data for the selected period.")
         return
 
-    # Time-period filter (sanitized)
-    period_opts = ["1 Week","1 Month","3 Months","6 Months","1 Year","All"]
-    period = st.radio("Period", period_opts, horizontal=True, index=2,
-                      key="period_radio")
-    period_s = sanitize_str(period)
-    try: validate_enum(period_s, set(period_opts))
-    except ValueError: period_s = "3 Months"
+    # ── Moving average ────────────────────────────────────────────────────────
+    ma = [np.mean(prices[max(0, i - ma_n + 1):i + 1]) if i >= ma_n - 1 else None
+          for i in range(len(prices))]
 
-    cutoff_map = {"1 Week":7,"1 Month":30,"3 Months":90,"6 Months":180,"1 Year":365,"All":99999}
-    cutoff_days = cutoff_map.get(period_s, 90)
-    cutoff_date = datetime.date.today() - datetime.timedelta(days=cutoff_days)
-
-    filtered = [r for r in hist if str(r["date"])>=str(cutoff_date)]
-    if len(filtered)<2: filtered = hist[-10:]
-
-    labels  = [r["date"] for r in filtered]
-    prices  = [float(r["price"]) for r in filtered]
-    maN     = min(20, len(prices)//2) if ho else min(7, len(prices)//2)
-    ma      = [np.mean(prices[max(0,i-maN+1):i+1]) if i>=maN-1 else None for i in range(len(prices))]
-    color   = "#f5a623" if ho else "#00d4ff"
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=labels,y=prices,name="Price",
-        line=dict(color=color,width=2),
-        fill="tozeroy",fillcolor=f"rgba({'245,166,35' if ho else '0,212,255'},.06)"))
-    fig.add_trace(go.Scatter(x=labels,y=ma,name=f"{maN}d MA",
-        line=dict(color="#9d7aff",width=1.5,dash="dot")))
-
+    # ── Dynamic y-axis — no hard-coded range ─────────────────────────────────
+    p_min, p_max = min(prices), max(prices)
     if ho:
-        p_min = min(prices)
-        p_max = max(prices)
-        yrange = [round(p_min - 0.25, 4), round(p_max + 0.25, 4)]
+        pad    = max(0.05, (p_max - p_min) * 0.10)
+        yrange = [round(p_min - pad, 4), round(p_max + pad, 4)]
     else:
-        yrange = None
-    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=340,
-        title=dict(text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History",
-                   font=dict(size=12,color="#c8d8ec")),
-        xaxis=dict(rangeslider=dict(visible=True,bgcolor="#07090f"),type="date"),
-        yaxis=dict(tickformat="$.4f" if ho else "$.2f",range=yrange),
+        pad    = max(1.0, (p_max - p_min) * 0.10)
+        yrange = [round(p_min - pad, 2), round(p_max + pad, 2)]
+
+    # ── Chart ─────────────────────────────────────────────────────────────────
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=labels, y=prices, name="Price",
+        line=dict(color=color, width=2),
+        fill="tozeroy", fillcolor=f"rgba({fill_rgba},.06)",
+        hovertemplate="$%{y:.4f}<extra></extra>" if ho else "$%{y:.2f}<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=labels, y=ma, name=f"{ma_n}pt MA",
+        line=dict(color="#9d7aff", width=1.5, dash="dot"),
+        hovertemplate="MA: $%{y:.4f}<extra></extra>" if ho else "MA: $%{y:.2f}<extra></extra>"))
+
+    fig.update_layout(
+        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=340,
+        title=dict(
+            text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History ({period_s})",
+            font=dict(size=12, color="#c8d8ec")),
+        xaxis=xaxis_cfg,
+        yaxis=dict(tickformat="$.4f" if ho else "$.2f", range=yrange),
         hovermode="x unified",
-        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
-    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("price_hist"))
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("price_hist"))
 
 
 # ── ③ PROBABILITY DISTRIBUTION ───────────────────────────────────────────────
@@ -321,7 +381,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("prob_bar"))
 
     with c2:
-        # CDF
         cum=0; cdf=[]
         for _,p in rows: cum+=p; cdf.append(round(cum*100,2))
         fig=go.Figure(go.Scatter(x=bins,y=cdf,mode="lines+markers",
@@ -334,7 +393,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
             xaxis=dict(title="Price Range"))
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("cdf"))
 
-    # EV row
     ev = result.get("ev_by_horizon",{})
     if ev:
         st.markdown("**Expected Value (EV) by Horizon** — probability-weighted average price")
@@ -342,11 +400,9 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
         for col,h in zip(ev_cols,HORIZONS):
             col.metric(h,f"${ev.get(h,0):.4f}" if ho else f"${ev.get(h,0):.2f}")
 
-    # Probability table
     st.markdown("**Probability Table** — all horizons")
     _render_prob_table(result, agent, sel_h, sel_bin)
 
-    # Log-normal shape (HO only)
     if ho:
         ls = result.get("lognorm_shape",{})
         if ls:
@@ -379,6 +435,32 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
                 st.markdown("</div>",unsafe_allow_html=True)
 
 
+def _render_prob_table(result, agent, sel_h, sel_bin):
+    ho   = agent=="ho"
+    rows = result.get("prob_table",{})
+    if not rows: return
+    th = "padding:7px 12px;background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
+    td = "padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
+    heads = "".join(f'<th style="{th}">{h}</th>' for h in ["Bin"]+HORIZONS)
+    bin_keys = [r[0] for r in rows.get(HORIZONS[0],[])]
+    body = ""
+    for b in bin_keys:
+        sel = sel_bin==b
+        row_bg = "background:#0a1e30;" if sel else ""
+        cells = f'<td style="{td}{row_bg}color:#c8d8ec;font-weight:{"700" if sel else "400"}">{b}</td>'
+        for h in HORIZONS:
+            p = next((r[1] for r in rows.get(h,[]) if r[0]==b), 0)
+            pct = round(p*100,1)
+            c = "#f5a623" if (h==sel_h and pct==max(round(r[1]*100,1) for r in rows.get(h,[]))) else "#c8d8ec"
+            cells += f'<td style="{td}{row_bg}color:{c}">{pct:.1f}%</td>'
+        body += f"<tr>{cells}</tr>"
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<thead><tr>{heads}</tr></thead><tbody>{body}</tbody></table></div>',
+        unsafe_allow_html=True)
+
+
 # ── ④ VOLATILITY (dynamic y-axis + period filter) ────────────────────────────
 def render_volatility(result):
     section("04","VOLATILITY","Rolling 10-day annualised vol — line chart")
@@ -390,7 +472,6 @@ def render_volatility(result):
     df_full = pd.DataFrame(vh)
     df_full["date"] = pd.to_datetime(df_full["date"])
 
-    # ── Period selector ───────────────────────────────────────────────────────
     period_opts = ["1M","3M","6M","1Y"]
     period_days = {"1M":30,"3M":90,"6M":180,"1Y":365}
     period = st.radio("Volatility period",period_opts,index=1,
@@ -402,14 +483,12 @@ def render_volatility(result):
     df     = df_full[df_full["date"]>=cutoff].copy()
     if df.empty: df = df_full.tail(10).copy()
 
-    # ── Dynamic y-axis: ceiling = max+5%, floor = min-15% ────────────────────
     v_max   = float(df["vol"].max())
     v_min   = float(df["vol"].min())
     y_upper = round(v_max * 1.05, 2)
     y_lower = round(v_min * 0.85, 2)
     avg     = float(df["vol"].mean())
 
-    # ── Chart ─────────────────────────────────────────────────────────────────
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines+markers",
         line=dict(color="#f5a623" if result.get("agent")=="ho" else "#00d4ff",width=2),
@@ -436,7 +515,6 @@ def render_scenario(result, agent, sel_scen):
     spot = md.get("HO",result.get("ho_price",3.5)) if ho else f.get("current_wti",result.get("wti",80))
     sigs = result.get("scenario_signals",{})
 
-    # Signal dashboard (HO only)
     if ho and sigs:
         sc1,sc2,sc3,sc4,sc5 = st.columns(5)
         base_drift = sigs.get("base_dynamic_drift_ann",0)
@@ -451,29 +529,20 @@ def render_scenario(result, agent, sel_scen):
         sc5.metric("EIA Signal", f"{sigs.get('eia_signal_ann',0):+.2f}%",
             help="Weekly inventory draw (+) or build (−) contribution")
 
-        # Signal decomposition bar
         sig_names  = ["Crack Spread","VIX","EIA Inventory","Seasonal"]
-        sig_values = [
-            sigs.get("crack_signal_ann",0),
-            sigs.get("vix_signal_ann",0),
-            sigs.get("eia_signal_ann",0),
-            sigs.get("seasonal_signal_ann",0),
-        ]
+        sig_values = [sigs.get("crack_signal_ann",0),sigs.get("vix_signal_ann",0),
+                      sigs.get("eia_signal_ann",0),sigs.get("seasonal_signal_ann",0)]
         sig_colors = ["#1df5a0" if v>=0 else "#ff3d5a" for v in sig_values]
         fig_sig = go.Figure(go.Bar(
             x=sig_names, y=sig_values, marker_color=sig_colors,
             text=[f"{v:+.2f}%" for v in sig_values], textposition="outside",
-            hovertemplate="%{x}: %{y:+.2f}% ann. drift<extra></extra>"))
-        fig_sig.add_hline(y=0, line=dict(color="#4a6080", width=1))
-        fig_sig.update_layout(
-            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=180,
-            title=dict(text="Live Signal Decomposition — Annualised Drift Contribution (%)",
-                       font=dict(size=10, color="#c8d8ec")),
-            yaxis=dict(title="Ann. drift (%)", ticksuffix="%"),
+            hovertemplate="%{x}: %{y:+.2f}% ann.<extra></extra>"))
+        fig_sig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=180,
+            title=dict(text="Signal Decomposition — Drift Contribution (ann. %)",font=dict(size=10,color="#c8d8ec")),
+            yaxis=dict(title="Drift (%)", ticksuffix="%"),
             showlegend=False, bargap=0.3, margin=dict(l=40,r=20,t=36,b=30))
         st.plotly_chart(fig_sig, use_container_width=True, config=_PCFG, key=_pc("sig_decomp"))
 
-    # Scenario paths
     fig=go.Figure()
     for i,(sname,path) in enumerate(sp.items()):
         opa = 1.0 if not sel_scen or sel_scen==sname else 0.2
@@ -490,7 +559,6 @@ def render_scenario(result, agent, sel_scen):
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen"))
 
-    # Scenario metadata table (HO only — shows drift/vol per scenario)
     if ho and sp:
         st.markdown("**Scenario Parameters** — effective drift and volatility after signal adjustments")
         rows_html = ""
@@ -520,7 +588,6 @@ def render_scenario(result, agent, sel_scen):
             unsafe_allow_html=True)
 
     c1,c2 = st.columns(2)
-    # Final prices bar
     with c1:
         names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
         _DIM=["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
@@ -531,7 +598,6 @@ def render_scenario(result, agent, sel_scen):
             title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=10,color="#c8d8ec")),
             yaxis=dict(tickformat="$.4f" if ho else "$.2f"),showlegend=False,bargap=0.2)
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen_final"))
-    # CI width
     with c2:
         cib=result.get("ci_bands",{})
         w95=[round((cib.get(h,{}).get("ci95",[0,0])[1]-cib.get(h,{}).get("ci95",[0,0])[0]),4) for h in HORIZONS]
@@ -552,12 +618,11 @@ def render_scenario(result, agent, sel_scen):
 # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────────
 def render_regional(result, agent, sel_reg):
     section("07","REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
-    rp    = result.get("regional_prices",[])       # US
-    br_rp = result.get("brazil_regional_prices",[]) # Brazil
+    rp    = result.get("regional_prices",[])
+    br_rp = result.get("brazil_regional_prices",[])
     ho    = agent=="ho"
     if not rp: return
 
-    # ── Helper: build one Scattergeo figure ───────────────────────────────────
     def _make_map(data, scope, title, proj, center_lat=None, center_lon=None, scale=None):
         avg_p = sum(r["price"] for r in data) / len(data)
         fig   = go.Figure()
@@ -606,7 +671,6 @@ def render_regional(result, agent, sel_reg):
             margin=dict(l=0, r=0, t=36, b=0))
         return fig, avg_p
 
-    # ── Helper: price bar chart ────────────────────────────────────────────────
     def _make_bar(data, avg_p, title, key):
         sorted_d  = sorted(data, key=lambda r: r["price"], reverse=True)
         names_r   = [r["state"] + " (" + r["region"].split()[0] + ")" for r in sorted_d]
@@ -657,18 +721,19 @@ def render_regional(result, agent, sel_reg):
 
         br_m1, br_m2 = st.columns([3, 2])
         with br_m1:
+            # scope="south america" clips the map window to the SA landmass,
+            # matching the natural irregular border that the US map gets from scope="usa"
             fig_br, br_avg = _make_map(
-                br_rp, scope=None,
+                br_rp, scope="south america",
                 title="Brazil Regional Diesel/Distillate Price Distribution",
                 proj="mercator",
                 center_lat=-14.0, center_lon=-52.0,
-                scale=2.8)
+                scale=None)
             st.plotly_chart(fig_br, use_container_width=True, config=_PCFG, key=_pc("map_br"))
         with br_m2:
             fig_br_bar = _make_bar(br_rp, br_avg, "Brazil Regional Prices", "br_bar")
             st.plotly_chart(fig_br_bar, use_container_width=True, config=_PCFG, key=_pc("region_bar_br"))
 
-        # ── Cross-country comparison bar ───────────────────────────────────────
         st.markdown("**US vs Brazil — Regional Price Comparison** ($/gal equivalent)")
         all_data = [(r["state"], r["price"], "US", "#00d4ff") for r in rp] + \
                    [(r["state"], r["price"], "BR", "#f5a623") for r in br_rp]
@@ -701,9 +766,8 @@ def render_regional(result, agent, sel_reg):
             margin=dict(l=40, r=10, t=36, b=60))
         st.plotly_chart(fig_cmp, use_container_width=True, config=_PCFG, key=_pc("region_cmp"))
 
-        # Caption with delta
-        us_avg_v = float(np.mean(us_prices_all))
-        br_avg_v = float(np.mean(br_prices_all))
+        us_avg_v  = float(np.mean(us_prices_all))
+        br_avg_v  = float(np.mean(br_prices_all))
         delta_pct = (br_avg_v - us_avg_v) / us_avg_v * 100
         st.caption(
             f"US avg: **${us_avg_v:.4f}/gal** · Brazil avg: **${br_avg_v:.4f}/gal** · "
@@ -714,18 +778,18 @@ def render_regional(result, agent, sel_reg):
 # ── ⑧ EIA INVENTORY DEEP DIVE ────────────────────────────────────────────────
 def render_eia_deep_dive(result):
     section("08","EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
-    eia = result.get("eia_data",{})
+    eia  = result.get("eia_data",{})
     hist = eia.get("history",[])
 
     c1,c2,c3 = st.columns(3)
-    s  = eia.get("stocks_mbbl")
-    wow= eia.get("wow_change")
+    s   = eia.get("stocks_mbbl")
+    wow = eia.get("wow_change")
     c1.metric("Latest Stocks", f"{s:,.0f} Mbbl" if s else "N/A")
     c2.metric("Week-on-Week",  f"{wow:+,.0f} Mbbl" if wow else "N/A",
               delta=f"{wow:+,.0f}" if wow else None)
     weeks = eia.get("weeks",[])
     if weeks:
-        avg4  = sum(w["value"] for w in weeks[:4])/min(4,len(weeks))
+        avg4 = sum(w["value"] for w in weeks[:4])/min(4,len(weeks))
         c3.metric("4-Week Avg", f"{avg4:,.0f} Mbbl")
     else:
         c3.metric("4-Week Avg","N/A")
@@ -751,9 +815,8 @@ def render_eia_deep_dive(result):
 
     df_full = pd.DataFrame(hist)
 
-    # ── Chart 1: Seasonal Inventory Band (Most Important) ─────────────────────
     st.markdown("**Seasonal Inventory Band** — current year vs 5-year historical range")
-    seasonal_bands = eia.get("seasonal_bands", [])
+    seasonal_bands  = eia.get("seasonal_bands", [])
     current_yr_data = eia.get("current_year_data", [])
 
     if seasonal_bands:
@@ -763,19 +826,16 @@ def render_eia_deep_dive(result):
         maxs = [b["max"]  for b in seasonal_bands]
 
         fig_sb = go.Figure()
-        # Shaded band (min to max)
         fig_sb.add_trace(go.Scatter(
             x=wks+wks[::-1], y=maxs+mins[::-1],
             fill="toself", fillcolor="rgba(0,212,255,0.10)",
             line=dict(color="rgba(0,0,0,0)"), name="5yr Min-Max Range",
             hoverinfo="skip"))
-        # 5-yr average line
         fig_sb.add_trace(go.Scatter(
             x=wks, y=avgs, mode="lines",
             line=dict(color="#00d4ff", width=1.5, dash="dot"),
             name="5yr Average",
             hovertemplate="Week %{x}: avg %{y:,.0f} Mbbl<extra></extra>"))
-        # Current year line
         if current_yr_data:
             cy_wks  = [r["week"]  for r in current_yr_data]
             cy_vals = [r["value"] for r in current_yr_data]
@@ -785,7 +845,6 @@ def render_eia_deep_dive(result):
                 marker=dict(size=5, color="#f5a623"),
                 name=f"{datetime.date.today().year}",
                 hovertemplate="Week %{x}: %{y:,.0f} Mbbl<extra></extra>"))
-            # Current week dot
             if cy_wks:
                 fig_sb.add_trace(go.Scatter(
                     x=[cy_wks[-1]], y=[cy_vals[-1]], mode="markers",
@@ -802,9 +861,8 @@ def render_eia_deep_dive(result):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_sb, use_container_width=True, config=_PCFG, key=_pc("eia_seasonal"))
     else:
-        st.info("Seasonal band requires 5+ years of EIA data. Showing available history instead.")
+        st.info("Seasonal band requires 5+ years of EIA data.")
 
-    # ── Chart 2: WoW Change Bar + Time-Series (side by side) ─────────────────
     st.markdown("**Inventory Levels & Week-over-Week Momentum** — last 16 weeks")
     c_a, c_b = st.columns([3, 2])
     with c_a:
@@ -854,133 +912,103 @@ def render_crack_spread(result, agent):
         st.info("Crack spread history requires both HO and WTI price history.")
         return
 
-    df_crack = pd.DataFrame(ch)
-    cracks   = df_crack["crack"].values
+    cracks = [row["crack"] for row in ch]
+    dates  = [row["date"]  for row in ch]
+    avg_c  = float(np.mean(cracks))
+    p25    = float(np.percentile(cracks, 25))
+    p75    = float(np.percentile(cracks, 75))
+    p10    = float(np.percentile(cracks, 10))
+    p90    = float(np.percentile(cracks, 90))
 
-    # Stats sidebar
-    pct_rank = float(np.mean(cracks < (current_crack or 0)) * 100) if len(cracks) > 1 else 50.0
-    p25, p50, p75 = np.percentile(cracks, [25, 50, 75])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Crack",   f"${current_crack:.2f}/bbl" if current_crack else "N/A")
+    c2.metric("1yr Average",     f"${avg_c:.2f}/bbl")
+    c3.metric("25th–75th Pctile",f"${p25:.2f}–${p75:.2f}")
+    c4.metric("10th–90th Pctile",f"${p10:.2f}–${p90:.2f}")
 
-    stat_cols = st.columns(5)
-    stat_cols[0].metric("Current Crack",   f"${current_crack:.2f}/bbl" if current_crack else "N/A")
-    stat_cols[1].metric("Percentile Rank", f"{pct_rank:.0f}th")
-    stat_cols[2].metric("90d Median (P50)",f"${p50:.2f}/bbl")
-    stat_cols[3].metric("90d High (P75)",  f"${p75:.2f}/bbl")
-    stat_cols[4].metric("90d Low (P25)",   f"${p25:.2f}/bbl")
-
-    # ── Chart 1: Time-series with percentile bands + 21d MA ──────────────────
-    ma21 = df_crack["crack"].rolling(21, min_periods=1).mean()
     fig1 = go.Figure()
-    # P25/P75 band
     fig1.add_trace(go.Scatter(
-        x=list(df_crack["date"]) + list(df_crack["date"])[::-1],
-        y=[p75]*len(df_crack) + [p25]*len(df_crack),
-        fill="toself", fillcolor="rgba(29,245,160,0.07)",
-        line=dict(color="rgba(0,0,0,0)"), name="P25–P75 Band", hoverinfo="skip"))
-    # P50 line
-    fig1.add_hline(y=float(p50), line=dict(color="#1df5a0", width=1, dash="dot"),
-        annotation_text=f"P50 ${p50:.2f}", annotation_font=dict(color="#1df5a0", size=9))
-    fig1.add_hline(y=float(p25), line=dict(color="#4a6080", width=0.8, dash="dot"),
-        annotation_text=f"P25 ${p25:.2f}", annotation_font=dict(color="#4a6080", size=8))
-    fig1.add_hline(y=float(p75), line=dict(color="#4a6080", width=0.8, dash="dot"),
-        annotation_text=f"P75 ${p75:.2f}", annotation_font=dict(color="#4a6080", size=8))
-    # Crack spread line
-    fig1.add_trace(go.Scatter(x=df_crack["date"], y=df_crack["crack"],
-        mode="lines", line=dict(color="#1df5a0", width=2),
-        fill="tozeroy", fillcolor="rgba(29,245,160,.06)",
-        hovertemplate="%{x}: $%{y:.2f}/bbl<extra></extra>", name="Crack Spread"))
-    # 21d MA
-    fig1.add_trace(go.Scatter(x=df_crack["date"], y=ma21,
-        mode="lines", line=dict(color="#9d7aff", width=1.5, dash="dot"),
-        name="21d MA", hovertemplate="%{x}: MA $%{y:.2f}<extra></extra>"))
-    # Current marker
+        x=dates+dates[::-1],
+        y=[p75]*len(dates)+[p25]*len(dates),
+        fill="toself", fillcolor="rgba(157,122,255,0.12)",
+        line=dict(color="rgba(0,0,0,0)"), name="25–75th Pctile", hoverinfo="skip"))
+    fig1.add_trace(go.Scatter(
+        x=dates, y=cracks, mode="lines",
+        line=dict(color="#9d7aff", width=2), name="Crack Spread",
+        hovertemplate="%{x}: $%{y:.2f}/bbl<extra></extra>"))
+    fig1.add_hline(y=avg_c, line=dict(color="#ffd060", width=1, dash="dash"),
+        annotation_text=f"Avg ${avg_c:.2f}", annotation_font=dict(color="#ffd060", size=9))
     if current_crack:
-        fig1.add_hline(y=current_crack, line=dict(color="#ff3d5a", width=1.5, dash="dash"),
-            annotation_text=f"Now ${current_crack:.2f}",
-            annotation_font=dict(color="#ff3d5a", size=9))
+        fig1.add_hline(y=current_crack, line=dict(color="#ff3d5a", width=1.5, dash="dot"),
+            annotation_text=f"Today ${current_crack:.2f}", annotation_font=dict(color="#ff3d5a", size=9))
     fig1.update_layout(
         template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=280,
-        title=dict(text="Crack Spread History with Percentile Bands (90d)",
+        title=dict(text="HO Crack Spread History ($/bbl) — with Percentile Band",
                    font=dict(size=11, color="#c8d8ec")),
-        xaxis=dict(type="date"), yaxis=dict(title="Crack Spread ($/bbl)"),
+        xaxis=dict(title=""), yaxis=dict(title="Crack Spread ($/bbl)"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig1, use_container_width=True, config=_PCFG, key=_pc("crack_ts"))
 
-    c1, c2 = st.columns(2)
-
-    # ── Chart 2: Histogram with current percentile marker ────────────────────
-    with c1:
-        fig2 = go.Figure()
-        fig2.add_trace(go.Histogram(
-            x=cracks, nbinsx=20,
-            marker=dict(color="#1df5a0", opacity=0.75, line=dict(color="#07090f", width=1)),
-            name="Distribution",
+    c_a, c_b = st.columns(2)
+    with c_a:
+        n_bins = min(30, max(10, len(cracks) // 5))
+        fig2 = go.Figure(go.Histogram(
+            x=cracks, nbinsx=n_bins,
+            marker_color="#9d7aff", opacity=0.8,
             hovertemplate="Crack $%{x:.2f}: %{y} days<extra></extra>"))
         if current_crack:
-            fig2.add_vline(x=current_crack,
-                line=dict(color="#ff3d5a", width=2, dash="dash"),
-                annotation_text=f"Now ${current_crack:.2f} ({pct_rank:.0f}th pct)",
-                annotation_font=dict(color="#ff3d5a", size=9))
-        fig2.add_vline(x=float(p50), line=dict(color="#1df5a0", width=1, dash="dot"),
-            annotation_text="P50", annotation_font=dict(color="#1df5a0", size=8))
+            fig2.add_vline(x=current_crack, line=dict(color="#ff3d5a", width=2, dash="dot"),
+                annotation_text="Today", annotation_font=dict(color="#ff3d5a", size=9))
+        fig2.add_vline(x=avg_c, line=dict(color="#ffd060", width=1.5, dash="dash"),
+            annotation_text=f"Avg ${avg_c:.2f}", annotation_font=dict(color="#ffd060", size=9))
         fig2.update_layout(
             template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-            title=dict(text="Crack Spread Distribution — 90 Days",
+            title=dict(text="Crack Spread Distribution — Frequency",
                        font=dict(size=10, color="#c8d8ec")),
             xaxis=dict(title="Crack Spread ($/bbl)"),
             yaxis=dict(title="Days"), showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True, config=_PCFG, key=_pc("crack_hist"))
+        st.plotly_chart(fig2, use_container_width=True, config=_PCFG, key=_pc("crack_dist"))
 
-    # ── Chart 3: Crack vs HO Price Scatter with regression ───────────────────
-    with c2:
-        ho_hist = result.get("history", [])
-        # Build aligned crack/HO series by date
-        ho_map = {r["date"]: r["price"] for r in ho_hist}
-        scatter_x, scatter_y = [], []
-        for row in ch:
-            if row["date"] in ho_map:
-                scatter_x.append(row["crack"])
-                scatter_y.append(ho_map[row["date"]])
-
-        if len(scatter_x) >= 5:
-            # Regression line
-            m, b = np.polyfit(scatter_x, scatter_y, 1)
-            x_line = [min(scatter_x), max(scatter_x)]
-            y_line = [m*x+b for x in x_line]
-
-            fig3 = go.Figure()
-            fig3.add_trace(go.Scatter(
-                x=scatter_x, y=scatter_y, mode="markers",
-                marker=dict(color="#9d7aff", size=5, opacity=0.6),
-                name="Historical",
-                hovertemplate="Crack $%{x:.2f} → HO $%{y:.4f}<extra></extra>"))
-            fig3.add_trace(go.Scatter(
-                x=x_line, y=y_line, mode="lines",
-                line=dict(color="#ffd060", width=1.5, dash="dot"),
-                name=f"Regression (slope={m:.4f})",
-                hoverinfo="skip"))
-            # Current day marker
-            if current_crack and current_crack in [row["crack"] for row in ch]:
-                cur_ho = result.get("market_data",{}).get("HO", 0)
+    with c_b:
+        if len(cracks) >= 10:
+            ho_prices = [row.get("ho") for row in ch if row.get("ho")]
+            crack_x   = [row["crack"] for row in ch if row.get("ho")]
+            if len(ho_prices) >= 10:
+                m, b = np.polyfit(crack_x, ho_prices, 1)
+                x_line = [min(crack_x), max(crack_x)]
+                y_line = [m*x+b for x in x_line]
+                fig3 = go.Figure()
                 fig3.add_trace(go.Scatter(
-                    x=[current_crack], y=[cur_ho], mode="markers",
-                    marker=dict(color="#ff3d5a", size=14, symbol="star",
-                                line=dict(width=2, color="#07090f")),
-                    name="Today",
-                    hovertemplate=f"Today: crack ${current_crack:.2f} → HO ${cur_ho:.4f}<extra></extra>"))
-            fig3.update_layout(
-                template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-                title=dict(text="Crack Spread vs HO Price — Historical Relationship",
-                           font=dict(size=10, color="#c8d8ec")),
-                xaxis=dict(title="Crack Spread ($/bbl)"),
-                yaxis=dict(title="HO Price ($/gal)", tickformat="$.4f"),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig3, use_container_width=True, config=_PCFG, key=_pc("crack_scatter"))
-        else:
-            st.info("Insufficient data for crack vs HO scatter plot.")
+                    x=crack_x, y=ho_prices, mode="markers",
+                    marker=dict(color="#9d7aff", size=5, opacity=0.6),
+                    name="Historical",
+                    hovertemplate="Crack $%{x:.2f} → HO $%{y:.4f}<extra></extra>"))
+                fig3.add_trace(go.Scatter(
+                    x=x_line, y=y_line, mode="lines",
+                    line=dict(color="#ffd060", width=1.5, dash="dot"),
+                    name=f"Regression (slope={m:.4f})",
+                    hoverinfo="skip"))
+                if current_crack and current_crack in [row["crack"] for row in ch]:
+                    cur_ho = result.get("market_data",{}).get("HO", 0)
+                    fig3.add_trace(go.Scatter(
+                        x=[current_crack], y=[cur_ho], mode="markers",
+                        marker=dict(color="#ff3d5a", size=14, symbol="star",
+                                    line=dict(width=2, color="#07090f")),
+                        name="Today",
+                        hovertemplate=f"Today: crack ${current_crack:.2f} → HO ${cur_ho:.4f}<extra></extra>"))
+                fig3.update_layout(
+                    template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
+                    title=dict(text="Crack Spread vs HO Price — Historical Relationship",
+                               font=dict(size=10, color="#c8d8ec")),
+                    xaxis=dict(title="Crack Spread ($/bbl)"),
+                    yaxis=dict(title="HO Price ($/gal)", tickformat="$.4f"),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig3, use_container_width=True, config=_PCFG, key=_pc("crack_scatter"))
+            else:
+                st.info("Insufficient data for crack vs HO scatter plot.")
 
 
-# ── ⑩-A SEASONAL PATTERN ANALYSIS ────────────────────────────────────────────
+# ── ⑩ SEASONAL PATTERN ANALYSIS ──────────────────────────────────────────────
 def render_seasonal_pattern(result, agent):
     if agent != "ho":
         return
@@ -1006,62 +1034,52 @@ def render_seasonal_pattern(result, agent):
     current_m  = datetime.date.today().month
     cur_ho     = result.get("market_data", {}).get("HO", result.get("ho_price", 0))
 
-    # Overall seasonal avg for delta
-    overall_avg = float(np.mean([p for v in month_buckets.values() for p in v])) if month_buckets else cur_ho
+    overall_avg   = float(np.mean([p for v in month_buckets.values() for p in v])) if month_buckets else cur_ho
     current_m_avg = avgs[current_m - 1] or cur_ho
     delta_vs_seasonal = round((cur_ho - current_m_avg) / current_m_avg * 100, 2) if current_m_avg else 0
 
     d1, d2 = st.columns(2)
-    d1.metric("Current Month Avg (hist.)", f"${current_m_avg:.4f}/gal")
+    d1.metric("Current Month Avg (hist.)", f"${current_m_avg:.4f}/gal",
+              help=f"Historical avg for {calendar.month_name[current_m]}")
     d2.metric("Live vs Seasonal Avg", f"{delta_vs_seasonal:+.2f}%",
-        delta=f"{delta_vs_seasonal:+.2f}%")
+              delta=f"{delta_vs_seasonal:+.2f}%",
+              help="Positive = currently trading above seasonal norm")
 
-    # Bar chart — monthly average with current month highlighted
-    bar_colors = []
-    for m in months:
-        if m == current_m:
-            bar_colors.append("#ffd060")
-        elif m in (11, 12, 1, 2, 3):
-            bar_colors.append("rgba(245,166,35,0.7)")   # heating season
-        else:
-            bar_colors.append("rgba(0,212,255,0.45)")   # off-season
-
-    valid_months = [m for m in months if avgs[m-1] is not None]
-    valid_avgs   = [avgs[m-1] for m in valid_months]
-    valid_labels = [month_abbr[m-1] for m in valid_months]
-    valid_colors = [bar_colors[m-1] for m in valid_months]
-
+    avgs_plot  = [a if a is not None else 0 for a in avgs]
+    bar_colors = ["#f5a623" if i+1==current_m else "#00d4ff" for i in range(12)]
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=valid_labels, y=valid_avgs, marker_color=valid_colors,
-        text=[f"${v:.4f}" for v in valid_avgs], textposition="outside",
-        hovertemplate="%{x}: avg $%{y:.4f}/gal<extra></extra>", name="Monthly Avg"))
-    # Live price horizontal line
-    fig.add_hline(y=cur_ho, line=dict(color="#ff3d5a", width=1.5, dash="dash"),
-        annotation_text=f"Live ${cur_ho:.4f}",
-        annotation_font=dict(color="#ff3d5a", size=9))
-    # Overall avg
-    fig.add_hline(y=overall_avg, line=dict(color="#4a6080", width=1, dash="dot"),
-        annotation_text=f"All-period avg ${overall_avg:.4f}",
-        annotation_font=dict(color="#4a6080", size=8))
+        x=month_abbr, y=avgs_plot, marker_color=bar_colors,
+        text=[f"${a:.4f}" if a else "N/A" for a in avgs],
+        textposition="outside",
+        hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>", name="Monthly Avg"))
+    fig.add_hline(y=overall_avg,
+        line=dict(color="#ffd060", width=1.5, dash="dash"),
+        annotation_text=f"Overall avg ${overall_avg:.4f}",
+        annotation_font=dict(color="#ffd060", size=9))
+    if cur_ho:
+        fig.add_hline(y=cur_ho,
+            line=dict(color="#ff3d5a", width=1.5, dash="dot"),
+            annotation_text=f"Live ${cur_ho:.4f}",
+            annotation_font=dict(color="#ff3d5a", size=9))
     fig.update_layout(
         template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=300,
-        title=dict(
-            text="Monthly Average HO Price — Seasonal Cycle  |  Orange = heating season  |  Gold = current month",
-            font=dict(size=11, color="#c8d8ec")),
-        xaxis=dict(title=""), yaxis=dict(title="Avg Price ($/gal)", tickformat="$.4f"),
-        showlegend=False, bargap=0.2)
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("seasonal_bar"))
-
+        title=dict(text="Seasonal Price Pattern — Monthly Historical Average",
+                   font=dict(size=11, color="#c8d8ec")),
+        xaxis=dict(title="Month"),
+        yaxis=dict(title="Avg Price ($/gal)", tickformat="$.4f"),
+        showlegend=False)
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("seasonal"))
     st.caption(
-        f"Current month ({calendar.month_name[current_m]}) historical avg: **${current_m_avg:.4f}** · "
+        f"Highlighted bar = current month ({calendar.month_name[current_m]}) · "
+        f"Avg: **${current_m_avg:.4f}** · "
         f"Live price: **${cur_ho:.4f}** · vs seasonal avg: **{delta_vs_seasonal:+.2f}%**")
 
 
 # ── ⑪ VALUE AT RISK & EXPECTED SHORTFALL ─────────────────────────────────────
 def render_var_es(result, agent):
     section("11","VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
-    ho    = agent=="ho"
+    ho       = agent=="ho"
     var_data = result.get("var_es",{})
     if not var_data:
         return
@@ -1098,78 +1116,23 @@ def render_var_es(result, agent):
         (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
 
 
-# ── Probability table (HTML, dark) ────────────────────────────────────────────
-def _render_prob_table(data, agent, sel_horizon, sel_bin):
-    rows = data.get("prob_table",{})
-    if not rows: return
-    ho        = agent=="ho"
-    all_bins  = [r[0] for r in rows.get(HORIZONS[0],[])]
-    bin_probs = {}
-    for h in HORIZONS:
-        for bl,prob in rows.get(h,[]):
-            if bl not in bin_probs: bin_probs[bl]={}
-            bin_probs[bl][h]=prob
-
-    th=("background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;"
-        "font-size:9px;text-transform:uppercase;letter-spacing:.8px;"
-        "padding:9px 12px;border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;")
-    th_l=th+"text-align:left;"
-    th_a=th+"color:#00d4ff;border-bottom:2px solid #00d4ff;"
-    hcells=f'<th style="{th_l}">PRICE RANGE</th>'
-    for h in HORIZONS:
-        hcells+=f'<th style="{th_a if h==sel_horizon else th}">{h}</th>'
-
-    tbody=""
-    for bl in sorted(all_bins,key=lambda b:(b!=sel_bin)):
-        is_sel  = bl==sel_bin
-        probs   = bin_probs.get(bl,{})
-        h_prob  = probs.get(sel_horizon,0)
-        is_best = h_prob==max((bin_probs.get(b,{}).get(sel_horizon,0) for b in all_bins),default=0)
-        row_bg  = "background:#0a1e30;" if is_sel else ("background:#0a1e18;" if is_best else "")
-        td_b    = f"padding:7px 12px;border-bottom:1px solid #0f1825;font-family:'JetBrains Mono',monospace;font-size:11px;text-align:center;{row_bg}"
-        lc      = "color:#00d4ff;font-weight:700;" if is_sel else ("color:#1df5a0;font-weight:600;" if is_best else "color:#c8d8ec;")
-        cells   = f'<td style="{td_b}text-align:left;{lc}">{bl}</td>'
-        for h in HORIZONS:
-            p   = probs.get(h,0); pct=f"{p*100:.2f}%"
-            w   = min(60,int(p*(400 if ho else 500)))
-            bc  = "#00d4ff" if h==sel_horizon else "#1a3050"
-            cc  = "color:#00d4ff;" if is_sel else ("color:#c8d8ec;" if h==sel_horizon else "color:#4a6080;")
-            bar=(f'<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">'
-                 f'<div style="width:60px;height:4px;background:#0d1220;border-radius:2px;">'
-                 f'<div style="width:{w}px;height:100%;background:{bc};border-radius:2px;"></div></div>'
-                 f'<span style="min-width:38px;text-align:right;{cc}">{pct}</span></div>')
-            cells+=f'<td style="{td_b}">{bar}</td>'
-        tbody+=f"<tr>{cells}</tr>"
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f;">'
-        f'<thead><tr>{hcells}</tr></thead><tbody>{tbody}</tbody></table></div>',
-        unsafe_allow_html=True)
-
-
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 def render_sidebar():
     st.sidebar.markdown("""
     <div style="padding:16px 0 8px">
-      <div style="font-size:18px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif">Energy Intel</div>
-      <div style="font-size:9px;color:#4a6080;font-family:'JetBrains Mono',monospace;margin-top:3px;letter-spacing:.8px">COMMODITY PROBABILITY ENGINE</div>
-    </div>""",unsafe_allow_html=True)
+      <div style="font-size:18px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif">
+        Energy Intelligence
+      </div>
+      <div style="font-size:9px;color:#4a6080;font-family:'JetBrains Mono',monospace;letter-spacing:1.2px;text-transform:uppercase">
+        Commodity Probability Engine
+      </div>
+    </div>""", unsafe_allow_html=True)
     st.sidebar.divider()
 
-    # Rate-limit info
-    sess = st.session_state.get("_session_id","default")
-    if "_session_id" not in st.session_state:
-        import uuid as _uuid
-        st.session_state["_session_id"] = _uuid.uuid4().hex
-        sess = st.session_state["_session_id"]
-    rem = limiter.remaining(sess)
-    st.sidebar.markdown(f'<div style="font-size:9px;color:#2a3850;font-family:\'JetBrains Mono\',monospace">Rate limit: {rem}/5 attempts remaining (15 min window)</div>',unsafe_allow_html=True)
+    sess = st.session_state.get("_session_id", id(st.session_state))
 
-    st.sidebar.markdown("**Run Agent**")
-    col1,col2=st.sidebar.columns(2)
-    run_oil=col1.button("Oil",  use_container_width=True)
-    run_ho =col2.button("HO",   use_container_width=True)
+    run_oil = st.sidebar.button("Oil (WTI/Brent)", use_container_width=True)
+    run_ho  = st.sidebar.button("HO (Heating Oil)", use_container_width=True)
 
     if run_oil:
         allowed,_,reset_in=limiter.check(sess)
@@ -1210,7 +1173,6 @@ def render_sidebar():
 
         sp=result.get("scenario_paths",{})
         scen_opts=["(All)"]+list(sp.keys())
-        scen_opts_clean=[sanitize_str(s) for s in scen_opts]
         sel_s=st.sidebar.selectbox("Scenario",scen_opts,index=0 if not st.session_state.sel_scenario else
             (scen_opts.index(st.session_state.sel_scenario) if st.session_state.sel_scenario in scen_opts else 0))
         st.session_state.sel_scenario=None if sel_s=="(All)" else sanitize_str(sel_s)
@@ -1246,7 +1208,6 @@ def render_dashboard():
     sel_bin = st.session_state.sel_bin
     sel_scen= st.session_state.sel_scenario
     sel_reg = st.session_state.sel_region
-    sel_drv = st.session_state.sel_driver
 
     if not result:
         st.markdown("""
@@ -1278,17 +1239,14 @@ def render_dashboard():
         render_seasonal_pattern(result, agent)
         render_var_es(result, agent)
 
-    # Summary
     section("--","MARKET SUMMARY")
     with st.expander("View full summary",expanded=False):
         st.code(result.get("summary",""),language=None)
 
-    # Run log
     with st.expander("Run log",expanded=False):
         st.markdown('<div class="status-box">'+"\n".join(st.session_state.log or [])+"</div>",
             unsafe_allow_html=True)
 
-    # Security audit (collapsed)
     with st.expander("Security audit",expanded=False):
         st.code(security_audit_report(),language=None)
 
