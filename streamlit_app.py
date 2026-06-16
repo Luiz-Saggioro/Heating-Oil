@@ -295,24 +295,26 @@ def render_price_history(result, agent):
 
     # ── Intraday path (1H / 1D / 1W) ─────────────────────────────────────────
     if period_s in INTRADAY_SET:
-        # FIX v2.1: "1 Day" now uses 2d lookback / 13 pts (one session),
-        #           distinct from "1 Week" which keeps 7d / 168 pts.
+        # v2.2 fix: each period uses a distinct since_dt / lookback so they
+        # show genuinely different windows of data:
+        #   "1 Hour" → today's session only (since midnight)
+        #   "1 Day"  → last 2 calendar days of hourly bars
+        #   "1 Week" → last 7 calendar days of hourly bars
+        today_midnight = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0))
         intraday_cfg = {
-            "1 Hour": ("1h",  2,  13),   # 1h bars, 2d lookback, ~last session
-            "1 Day":  ("1h",  2,  13),   # 1h bars, 2d lookback, last session  ← FIXED
-            "1 Week": ("1h",  7, 168),   # 1h bars, 7d lookback, full week
+            #        interval  lookback  since_dt          tick_fmt
+            "1 Hour": ("1h",  7,        today_midnight,   "%H:%M"       ),
+            "1 Day":  ("1h",  2,        None,             "%b %d %H:%M" ),
+            "1 Week": ("1h",  7,        None,             "%b %d"       ),
         }
-        interval, lookback, max_pts = intraday_cfg[period_s]
+        interval, lookback, since_dt, tick_fmt = intraday_cfg[period_s]
         rows, is_synthetic = _df.fetch_intraday_history(
-            ticker_name, interval=interval, lookback_days=lookback
+            ticker_name, interval=interval, lookback_days=lookback, since_dt=since_dt
         )
-        rows = rows[-max_pts:]
 
         labels = [r["datetime"] for r in rows]
         prices = [float(r["price"]) for r in rows]
 
-        # x-axis tick format depends on zoom level
-        tick_fmt  = "%H:%M" if period_s == "1 Hour" else "%b %d %H:%M"
         xaxis_cfg = dict(
             type="date",
             tickformat=tick_fmt,
@@ -366,7 +368,7 @@ def render_price_history(result, agent):
         pad    = max(1.0, (p_max - p_min) * 0.10)
         yrange = [round(p_min - pad, 2), round(p_max + pad, 2)]
 
-    # ── Chart — height 480 for better vertical readability ───────────────────
+    # ── Chart — full-width container, height 520 ────────────────────────────
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=labels, y=prices, name="Price",
@@ -379,7 +381,7 @@ def render_price_history(result, agent):
         hovertemplate="MA: $%{y:.4f}<extra></extra>" if ho else "MA: $%{y:.2f}<extra></extra>"))
 
     fig.update_layout(
-        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=480,
+        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=520,
         title=dict(
             text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History ({period_s})",
             font=dict(size=12, color="#c8d8ec")),
@@ -387,7 +389,8 @@ def render_price_history(result, agent):
         yaxis=dict(tickformat="$.4f" if ho else "$.2f", range=yrange),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("price_hist"))
+    with st.container():
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("price_hist"))
 
 
 # ── ③ PROBABILITY DISTRIBUTION ───────────────────────────────────────────────
