@@ -280,11 +280,11 @@ def render_price_history(result, agent):
     color       = "#f5a623" if ho else "#00d4ff"
     fill_rgba   = "245,166,35" if ho else "0,212,255"
 
-    # Period options — short-term first per stakeholder priority
-    PERIOD_OPTS  = ["1 Hour", "1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
-    INTRADAY_SET = {"1 Hour", "1 Day", "1 Week"}
+    # Period options — "1 Hour" removed (unreliable intraday source)
+    PERIOD_OPTS  = ["1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
+    INTRADAY_SET = {"1 Day", "1 Week"}
 
-    period = st.radio("Period", PERIOD_OPTS, horizontal=True, index=2, key="period_radio")
+    period = st.radio("Period", PERIOD_OPTS, horizontal=True, index=1, key="period_radio")
     period_s = sanitize_str(period)
     try:
         validate_enum(period_s, set(PERIOD_OPTS))
@@ -293,23 +293,16 @@ def render_price_history(result, agent):
 
     is_synthetic = False
 
-    # ── Intraday path (1H / 1D / 1W) ─────────────────────────────────────────
+    # ── Intraday path (1D / 1W) ───────────────────────────────────────────────
     if period_s in INTRADAY_SET:
-        # v2.2 fix: each period uses a distinct since_dt / lookback so they
-        # show genuinely different windows of data:
-        #   "1 Hour" → today's session only (since midnight)
-        #   "1 Day"  → last 2 calendar days of hourly bars
-        #   "1 Week" → last 7 calendar days of hourly bars
-        today_midnight = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0))
         intraday_cfg = {
-            #        interval  lookback  since_dt          tick_fmt
-            "1 Hour": ("1h",  7,        today_midnight,   "%H:%M"       ),
-            "1 Day":  ("1h",  2,        None,             "%b %d %H:%M" ),
-            "1 Week": ("1h",  7,        None,             "%b %d"       ),
+            #        interval  lookback  tick_fmt
+            "1 Day":  ("1h",  2,        "%b %d %H:%M" ),
+            "1 Week": ("1h",  7,        "%b %d"       ),
         }
-        interval, lookback, since_dt, tick_fmt = intraday_cfg[period_s]
+        interval, lookback, tick_fmt = intraday_cfg[period_s]
         rows, is_synthetic = _df.fetch_intraday_history(
-            ticker_name, interval=interval, lookback_days=lookback, since_dt=since_dt
+            ticker_name, interval=interval, lookback_days=lookback
         )
 
         labels = [r["datetime"] for r in rows]
