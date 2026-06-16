@@ -16,6 +16,9 @@ Intraday history (1h / 1d intervals for short-term chart):
   1. yfinance .history()   — primary, supports 1h up to 730d lookback
   2. Synthetic fallback     — CLEARLY FLAGGED, never silent
 
+v2.2 fix: _yfinance_intraday accepts since_dt to hard-filter by timestamp,
+          allowing true single-session isolation for the "1 Hour" view.
+
 All data is flagged with its source and age in the run log.
 """
 
@@ -90,11 +93,11 @@ def _yfinance_history(name, days):
     import yfinance as yf
     ticker_sym = TICKER_MAP[name][0]
     period_days = days + 30
-    if period_days <= 30:   period = "1mo"
-    elif period_days <= 90: period = "3mo"
-    elif period_days <= 180:period = "6mo"
-    elif period_days <= 365:period = "1y"
-    else:                   period = "2y"
+    if period_days <= 30:    period = "1mo"
+    elif period_days <= 90:  period = "3mo"
+    elif period_days <= 180: period = "6mo"
+    elif period_days <= 365: period = "1y"
+    else:                    period = "2y"
     t   = yf.Ticker(ticker_sym)
     df  = t.history(period=period, interval="1d", auto_adjust=True)
     if df is None or df.empty:
@@ -112,11 +115,16 @@ def _yfinance_history(name, days):
 
 # ── INTRADAY HISTORY (1h / 1d intervals) ─────────────────────────────────────
 
-def _yfinance_intraday(name, interval, lookback_days):
+def _yfinance_intraday(name, interval, lookback_days, since_dt=None):
     """
     Fetch intraday OHLC via yfinance.
-    interval:      '1h' (hourly) | '1d' (daily, used for short daily views)
-    lookback_days: calendar days to look back; Yahoo caps 1h at ~730d.
+
+    interval:      '1h' (hourly) | '1d' (daily)
+    lookback_days: calendar days passed to yfinance period bucket.
+    since_dt:      optional datetime — rows with datetime < since_dt are dropped
+                   AFTER fetching. Use this to isolate a single trading session
+                   (e.g. since_dt = today 00:00 for the "1 Hour" view).
+
     Returns list of {datetime, price} dicts, newest last.
     datetime key is ISO string: 'YYYY-MM-DDTHH:MM' for 1h, 'YYYY-MM-DD' for 1d.
     """
@@ -143,7 +151,11 @@ def _yfinance_intraday(name, interval, lookback_days):
             rows.append({"datetime": ts_str, "price": round(close, 4)})
     if len(rows) < 2:
         raise ValueError(f"yfinance intraday too short for {name}: {len(rows)} rows")
-    # Trim to requested lookback
+    # Hard timestamp filter — used to isolate a single session (e.g. "1 Hour" view)
+    if since_dt is not None:
+        since_str = since_dt.strftime("%Y-%m-%dT%H:%M")
+        rows = [r for r in rows if r["datetime"] >= since_str]
+    # Fallback trim by lookback
     max_pts = lookback_days * 24 if interval == "1h" else lookback_days
     return rows[-max_pts:]
 
@@ -161,7 +173,7 @@ def _synthetic_intraday(name, interval, lookback_days, send=print):
              "RBOB": 0.003, "DXY": 0.001, "VIX": 0.008}
     base = bases.get(name, 50.0)
     vol  = vols.get(name, 0.003)
-    rng  = numpy_rng = __import__("numpy").random.default_rng(
+    rng  = __import__("numpy").random.default_rng(
         seed=int(datetime.datetime.now().strftime("%Y%m%d%H")))
     now  = datetime.datetime.now().replace(minute=0, second=0, microsecond=0)
     step = (datetime.timedelta(hours=1)
@@ -171,7 +183,6 @@ def _synthetic_intraday(name, interval, lookback_days, send=print):
     cur = now - step * total_steps
     while cur <= now:
         if cur.weekday() < 5:
-            import numpy as np
             price = max(0.5, price * (1 + float(rng.normal(0, vol))))
             ts_str = (cur.strftime("%Y-%m-%dT%H:%M")
                       if interval == "1h" else str(cur.date()))
@@ -180,18 +191,21 @@ def _synthetic_intraday(name, interval, lookback_days, send=print):
     return rows
 
 
-def fetch_intraday_history(name, interval="1h", lookback_days=7, send=print):
+def fetch_intraday_history(name, interval="1h", lookback_days=7, since_dt=None, send=print):
     """
     Fetch short-term intraday history for the price chart.
+
     interval:      '1h' | '1d'
     lookback_days: calendar days to look back
+    since_dt:      optional datetime lower-bound filter (isolates a single session)
+
     Returns (rows, is_synthetic).
     rows is a list of {datetime, price} dicts; datetime is an ISO string.
     """
     try:
-        rows = _yfinance_intraday(name, interval, lookback_days)
+        rows = _yfinance_intraday(name, interval, lookback_days, since_dt=since_dt)
         send(f"  Intraday {name} [{interval}]: {len(rows)} pts "
-             f"({rows[0]['datetime']} → {rows[-1]['datetime']})")
+             f"({rows[0]['datetime']} -> {rows[-1]['datetime']})")
         return rows, False
     except Exception as e:
         send(f"  [WARN] Intraday {name} [{interval}] failed: {e} — using synthetic")
@@ -260,64 +274,62 @@ def _fred_live(name):
         if len(parts) == 2 and parts[1] not in (".", ""):
             try:
                 price = float(parts[1])
-                dt    = datetime.datetime.strptime(parts[0], "%Y-%m-%d")
                 if _sane(name, price):
-                    return price, dt, "FRED (St. Louis Fed)"
+                    dt = datetime.datetime.strptime(parts[0], "%Y-%m-%d")
+                    return price, dt, f"FRED ({series})"
             except ValueError:
-                continue
-    raise ValueError(f"FRED returned no valid price for {name}")
+                pass
+    raise ValueError(f"FRED: no valid recent data for {name}")
 
 
-# ── SYNTHETIC FALLBACK (clearly flagged) ──────────────────────────────────────
+# ── SYNTHETIC DAILY FALLBACK ──────────────────────────────────────────────────
 
 def _synthetic_history(name, days, send=print):
-    """
-    Last-resort random walk. Always logs a loud warning — never silent.
-    The returned rows include a 'synthetic': True flag so the UI can warn the user.
-    """
+    """Last-resort synthetic daily history — always logs a loud warning."""
     import numpy as np
-    send(f"  *** WARNING: Using SYNTHETIC (fake) history for {name}. "
-         f"All sources failed. Data is NOT real. ***")
+    send(f"  *** WARNING: SYNTHETIC daily history for {name}. NOT real data. ***")
     bases = {"HO": 3.50, "WTI": 75.0, "Brent": 79.0,
              "RBOB": 2.40, "DXY": 103.5, "VIX": 18.0}
-    vols  = {"HO": 0.012, "WTI": 0.010, "Brent": 0.010,
-             "RBOB": 0.012, "DXY": 0.004, "VIX": 0.025}
+    vols  = {"HO": 0.012, "WTI": 0.015, "Brent": 0.015,
+             "RBOB": 0.013, "DXY": 0.004, "VIX": 0.04}
     base  = bases.get(name, 50.0)
-    vol   = vols.get(name, 0.010)
-    rng   = np.random.default_rng(seed=int(datetime.date.today().strftime("%Y%m%d")))
-    end   = datetime.date.today()
+    vol   = vols.get(name, 0.012)
+    rng   = np.random.default_rng(seed=42)
     rows, price = [], base
-    for i in range(days + 30, -1, -1):
-        d = end - datetime.timedelta(days=i)
+    for i in range(days, 0, -1):
+        d = datetime.date.today() - datetime.timedelta(days=i)
         if d.weekday() < 5:
             price = max(0.5, price * (1 + float(rng.normal(0, vol))))
             rows.append({"date": str(d), "price": round(price, 4), "synthetic": True})
-    return rows[-days:]
+    return rows
 
 
-# ── PUBLIC API ────────────────────────────────────────────────────────────────
+# ── MAIN FETCH FUNCTIONS ──────────────────────────────────────────────────────
 
 def fetch_price(name, send=print):
     """
-    Try each live source in order. Return (price, dt, source_label).
+    Try each live price source in order.
+    Returns (price, datetime, source_label).
     Raises RuntimeError if all sources fail.
     """
+    if name not in TICKER_MAP:
+        raise ValueError(f"Unknown ticker: {name}")
     sources = [
-        ("yfinance",      _yfinance_live),
-        ("Yahoo v8",      _yahoo_v8_live),
-        ("FRED",          _fred_live),
+        ("yfinance",     lambda: _yfinance_live(name)),
+        ("Yahoo v8",     lambda: _yahoo_v8_live(name)),
+        ("FRED",         lambda: _fred_live(name)),
     ]
     errors = []
     for label, fn in sources:
         try:
-            price, dt, src = fn(name)
-            age = _fmt_age(datetime.datetime.now() - dt) if dt else "?"
-            send(f"  OK {name} = {price:.4f}  [{src} | age: {age}]")
+            price, dt, src = fn()
+            age = datetime.datetime.now() - dt if dt else None
+            age_str = _fmt_age(age) if age else "unknown"
+            send(f"  OK {name} = {price:.4f}  [{src} | age: {age_str}]")
             return price, dt, src
         except Exception as e:
             errors.append(f"    {label}: {e}")
             time.sleep(0.2)
-
     send(f"  FAILED all sources for {name}:")
     for err in errors:
         send(err)
@@ -338,12 +350,11 @@ def fetch_history(name, days=365, send=print):
         try:
             rows = fn()
             send(f"  History {name}: {len(rows)} pts via {label} "
-                 f"({rows[0]['date']} → {rows[-1]['date']})")
+                 f"({rows[0]['date']} -> {rows[-1]['date']})")
             return rows
         except Exception as e:
             send(f"  History {label} failed for {name}: {e}")
             time.sleep(0.2)
-
     return _synthetic_history(name, days, send=send)
 
 
@@ -353,13 +364,10 @@ def fetch_all(names=None, send=print, history_days=365):
     Returns dict: name -> {current, dt, source, history, returns, is_synthetic}
     """
     import numpy as np
-
     if names is None:
         names = list(TICKER_MAP.keys())
-
     result = {}
     send("Fetching live prices ...")
-
     for name in names:
         if name not in TICKER_MAP:
             send(f"  [SKIP] Unknown ticker: {name}")
@@ -369,20 +377,16 @@ def fetch_all(names=None, send=print, history_days=365):
         except RuntimeError as e:
             send(f"  [WARN] Skipping {name}: {e}")
             continue
-
         history = fetch_history(name, days=history_days, send=send)
         is_synthetic = any(r.get("synthetic") for r in history)
-
         # Pin today's live price as the last data point
         today_str = str(datetime.date.today())
         if history and history[-1]["date"] == today_str:
             history[-1]["price"] = price
         else:
             history.append({"date": today_str, "price": price})
-
         closes  = [r["price"] for r in history]
         returns = list(np.diff(np.log(closes))) if len(closes) > 1 else []
-
         result[name] = {
             "current":      price,
             "dt":           dt,
@@ -391,16 +395,15 @@ def fetch_all(names=None, send=print, history_days=365):
             "returns":      returns,
             "is_synthetic": is_synthetic,
         }
-
     return result
 
 
 def _fmt_age(delta):
     secs = int(delta.total_seconds())
-    if secs < 0:    return "unknown"
-    if secs < 60:   return f"{secs}s"
-    if secs < 3600: return f"{secs//60}m"
-    if secs < 86400:return f"{secs//3600}h"
+    if secs < 0:     return "unknown"
+    if secs < 60:    return f"{secs}s"
+    if secs < 3600:  return f"{secs//60}m"
+    if secs < 86400: return f"{secs//3600}h"
     return f"{secs//86400}d"
 
 
@@ -414,9 +417,17 @@ if __name__ == "__main__":
         dt_str = d["dt"].strftime("%Y-%m-%d %H:%M") if d["dt"] else "?"
         print(f"  {name:8s}  {d['current']:>10.4f}  {dt_str}  [{d['source']}]  "
               f"history={len(d['history'])}pts{synth}")
-
     print("\n--- INTRADAY TEST ---")
-    rows, synth = fetch_intraday_history("HO", interval="1h", lookback_days=7)
-    print(f"  HO 1h: {len(rows)} pts  synthetic={synth}")
+    # 1 Hour: today's session only
+    today_start = datetime.datetime.combine(datetime.date.today(), datetime.time(0, 0))
+    rows, synth = fetch_intraday_history("HO", interval="1h", lookback_days=7,
+                                         since_dt=today_start)
+    print(f"  HO 1h (today only): {len(rows)} pts  synthetic={synth}")
     if rows:
         print(f"  First: {rows[0]}  Last: {rows[-1]}")
+    # 1 Day: last 2 calendar days
+    rows, synth = fetch_intraday_history("HO", interval="1h", lookback_days=2)
+    print(f"  HO 1h (2d lookback): {len(rows)} pts  synthetic={synth}")
+    # 1 Week: last 7 calendar days
+    rows, synth = fetch_intraday_history("HO", interval="1h", lookback_days=7)
+    print(f"  HO 1h (7d lookback): {len(rows)} pts  synthetic={synth}")
