@@ -1,13 +1,33 @@
 {
-  "_comment": "Credential store for Energy Intelligence Dashboard. Passwords hashed with PBKDF2-HMAC-SHA256, 260000 iterations. Edit via manage_users.py locally, then commit to GitHub.",
+  "_comment": "Managed via manage_users.py. Commit to GitHub to persist.",
   "users": [
     {
       "login": "Luiz Saggioro",
-      "password_hash": "9701f8839ccf18043780d02830ce1120c54252805f28d5814e4eda17efa25450",
-      "salt": "0766d533278129aee48ba15c7670bf0e",
+      "password_hash": "908429ce2e5bdeb95417ca920339db3003e21d41a64ad9d77a0a4b4e11ade9f5",
+      "salt": "23608426f01d3ed3b31e739c6ec6f433",
       "is_admin": true,
       "is_active": true,
-      "totp_secret": "F27B6XM4QIDQUDTZALGSZL3LFX3ZALRS",
+      "totp_secret": "M3GYJOHZJGUMG64HMTRUH5V5KBMJISFR",
+      "totp_enabled": false,
+      "created_at": "2026-07-24"
+    },
+    {
+      "login": "Pedro Adm",
+      "password_hash": "37aaefecc568777274837429fe3f5795161ba915ee83e41b3375703e8bfc18f5",
+      "salt": "fc37903b1e582a089020ae01224bcfba",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "TXP73OI7RAAQRDJI2F2B3GLM6ZJM7BMY",
+      "totp_enabled": false,
+      "created_at": "2026-07-24"
+    },
+    {
+      "login": "Nam Adm",
+      "password_hash": "b798ff7cd1b7b6d82d9cf511f834e3522bb57eca173599469fb7b2566ba1aff7",
+      "salt": "72ccc4ea0dda9fc678882b69bac4d7ff",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "2P53BRR7QLFZIPMBKEIGQVB2E3CH2OAN",
       "totp_enabled": false,
       "created_at": "2026-07-24"
     }
