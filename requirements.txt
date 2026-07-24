@@ -9,6 +9,7 @@ yfinance
 requests
 python-dotenv
 matplotlib
+scipy
 
 # Authentication
 pyotp          # TOTP two-factor authentication
