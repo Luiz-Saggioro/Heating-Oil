@@ -1,12 +1,13 @@
 """
 Energy Intelligence Dashboard — Streamlit Edition
 HO + WTI/Oil. All emojis removed from UI labels.
-Security: rate-limiting, input sanitization, env-var secrets.
-Changes v2.1:
-  - Fix: "1 Day" intraday now shows last trading session (2d lookback, 13 bars)
-         instead of duplicating "1 Week" (7d lookback, 168 bars)
-  - Fix: Price history chart height increased 340 → 480 for better readability
-  - Add: "Refresh Data" button in sidebar to force-bust the 5-min cache
+Security: rate-limiting, input sanitization, env-var secrets, login + 2FA.
+Changes v3.0:
+  - Add: Login gate with PBKDF2 password verification
+  - Add: TOTP two-factor authentication (Google Authenticator / Authy)
+  - Add: Admin user management panel (add / deactivate users)
+  - Add: Logout button in sidebar
+  - Note: users stored in users.json; manage locally via manage_users.py
 """
 
 import streamlit as st
@@ -19,6 +20,8 @@ from plotly.subplots import make_subplots
 import datetime
 import os
 import data_fetcher as _df
+import json
+import hashlib
 
 # Load .env if present (local dev)
 try:
@@ -121,6 +124,341 @@ def security_audit_report() -> str:
 
 limiter = _RateLimiter()
 
+
+# ── INLINED AUTH MODULE ───────────────────────────────────────────────────────
+# Users stored in users.json (PBKDF2 hashed passwords + TOTP secrets).
+# Manage users locally with manage_users.py, then commit to GitHub.
+
+_PBKDF2_ITERS = 260000
+_ADMIN_LOGIN  = "Luiz Saggioro"
+_USERS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.json")
+
+
+def _load_users() -> list:
+    try:
+        with open(_USERS_FILE, "r", encoding="utf-8") as _f:
+            return json.load(_f).get("users", [])
+    except Exception:
+        return []
+
+
+def _find_user(login: str):
+    for u in _load_users():
+        if u.get("login", "").strip().lower() == login.strip().lower():
+            return u
+    return None
+
+
+def _verify_password(user: dict, password: str) -> bool:
+    try:
+        salt     = bytes.fromhex(user["salt"])
+        expected = user["password_hash"]
+        key      = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERS)
+        return key.hex() == expected
+    except Exception:
+        return False
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    """Returns True if code matches.  Fails open only when pyotp is missing."""
+    try:
+        import pyotp
+        return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+    except ImportError:
+        logger.warning("[AUTH] pyotp not installed — skipping TOTP check")
+        return True
+
+
+def _totp_uri(secret: str, login: str) -> str:
+    try:
+        import pyotp
+        return pyotp.TOTP(secret).provisioning_uri(name=login, issuer_name="Energy Intelligence")
+    except ImportError:
+        return ""
+
+
+def _save_users(users: list) -> bool:
+    try:
+        db = {"_comment": "Managed via manage_users.py. Commit to GitHub to persist.",
+              "users": users}
+        with open(_USERS_FILE, "w", encoding="utf-8") as _f:
+            json.dump(db, _f, indent=2)
+        return True
+    except Exception as exc:
+        logger.error(f"[AUTH] save_users failed: {exc}")
+        return False
+
+
+def _mark_totp_enabled(login: str) -> None:
+    users = _load_users()
+    for u in users:
+        if u.get("login", "").strip().lower() == login.strip().lower():
+            u["totp_enabled"] = True
+            break
+    _save_users(users)
+
+
+# ── Auth session helpers ──────────────────────────────────────────────────────
+
+def _auth_init():
+    defaults = dict(
+        auth_logged_in    = False,
+        auth_user         = None,
+        auth_is_admin     = False,
+        auth_step         = "login",    # "login" | "totp" | "totp_setup"
+        auth_pending_user = None,
+        auth_error        = "",
+    )
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _auth_logout():
+    for k in ["auth_logged_in","auth_user","auth_is_admin",
+              "auth_step","auth_pending_user","auth_error"]:
+        st.session_state.pop(k, None)
+
+
+# ── Auth CSS ──────────────────────────────────────────────────────────────────
+
+_AUTH_CSS = """
+<style>
+.auth-wrap{max-width:400px;margin:80px auto;}
+.auth-card{
+  padding:40px 36px;background:#0a0e18;
+  border:1px solid #1a2540;border-radius:12px;
+}
+.auth-title{
+  font-size:22px;font-weight:800;color:#c8d8ec;
+  font-family:'Syne',sans-serif;margin-bottom:4px;
+}
+.auth-sub{
+  font-size:10px;color:#4a6080;
+  font-family:'JetBrains Mono',monospace;
+  letter-spacing:1.2px;text-transform:uppercase;margin-bottom:28px;
+}
+</style>
+"""
+
+
+# ── Login form (step 1) ───────────────────────────────────────────────────────
+
+def render_login_form():
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Energy Intelligence</div>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-sub'>Secure access — sign in to continue</div>",
+                unsafe_allow_html=True)
+
+    with st.form("login_form", clear_on_submit=False):
+        login    = st.text_input("Login name", placeholder="e.g. Luiz Saggioro")
+        password = st.text_input("Password", type="password")
+        submit   = st.form_submit_button("Sign in", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if submit:
+        login = sanitize_str(login.strip(), max_len=100)
+        user  = _find_user(login)
+        if not user or not user.get("is_active", False) or not _verify_password(user, password):
+            st.session_state.auth_error = "Invalid credentials or account inactive."
+            st.rerun()
+        else:
+            st.session_state.auth_pending_user = user
+            st.session_state.auth_step = "totp_setup" if not user.get("totp_enabled") else "totp"
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── TOTP verification (step 2, returning users) ───────────────────────────────
+
+def render_totp_form():
+    user = st.session_state.auth_pending_user
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Two-Factor Auth</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='auth-sub'>Enter the 6-digit code for {user['login']}</div>",
+                unsafe_allow_html=True)
+
+    with st.form("totp_form", clear_on_submit=True):
+        code   = st.text_input("Authenticator code", max_chars=6, placeholder="000000")
+        submit = st.form_submit_button("Verify", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if st.button("Back to login", key="totp_back"):
+        st.session_state.auth_step = "login"
+        st.session_state.auth_pending_user = None
+        st.rerun()
+
+    if submit:
+        if _verify_totp(user["totp_secret"], code):
+            st.session_state.auth_logged_in    = True
+            st.session_state.auth_user         = user["login"]
+            st.session_state.auth_is_admin     = user.get("is_admin", False)
+            st.session_state.auth_step         = "login"
+            st.session_state.auth_pending_user = None
+            st.rerun()
+        else:
+            st.session_state.auth_error = "Incorrect code — try again."
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── TOTP first-time setup (step 2, new users) ────────────────────────────────
+
+def render_totp_setup():
+    user   = st.session_state.auth_pending_user
+    secret = user["totp_secret"]
+    uri    = _totp_uri(secret, user["login"])
+
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Set up Two-Factor Auth</div>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-sub'>One-time setup — scan QR or enter key manually</div>",
+                unsafe_allow_html=True)
+
+    qr_ok = False
+    if uri:
+        try:
+            import qrcode, io
+            buf = io.BytesIO()
+            qrcode.make(uri).save(buf, format="PNG")
+            buf.seek(0)
+            st.image(buf, caption="Scan with Google Authenticator / Authy / 1Password", width=240)
+            qr_ok = True
+        except ImportError:
+            pass
+
+    if not qr_ok:
+        st.markdown("**Add manually in your authenticator app:**")
+        if uri:
+            st.code(uri, language=None)
+
+    st.markdown("**Secret key (manual entry):**")
+    st.code(secret, language=None)
+    st.caption("Time-based (TOTP) · issuer: Energy Intelligence")
+
+    with st.form("totp_setup_form", clear_on_submit=True):
+        code   = st.text_input("Confirm with a 6-digit code", max_chars=6, placeholder="000000")
+        submit = st.form_submit_button("Confirm & sign in", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if st.button("Back to login", key="setup_back"):
+        st.session_state.auth_step = "login"
+        st.session_state.auth_pending_user = None
+        st.rerun()
+
+    if submit:
+        if _verify_totp(secret, code):
+            _mark_totp_enabled(user["login"])
+            st.session_state.auth_logged_in    = True
+            st.session_state.auth_user         = user["login"]
+            st.session_state.auth_is_admin     = user.get("is_admin", False)
+            st.session_state.auth_step         = "login"
+            st.session_state.auth_pending_user = None
+            st.rerun()
+        else:
+            st.session_state.auth_error = "Incorrect code — make sure you scanned the right key."
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── Auth gate dispatcher ──────────────────────────────────────────────────────
+
+def render_auth_gate() -> bool:
+    """Call before any dashboard content. Returns True if user is authenticated."""
+    _auth_init()
+    if st.session_state.auth_logged_in:
+        return True
+    step = st.session_state.auth_step
+    if step == "totp":
+        render_totp_form()
+    elif step == "totp_setup":
+        render_totp_setup()
+    else:
+        render_login_form()
+    return False
+
+
+# ── Admin panel (sidebar) ─────────────────────────────────────────────────────
+
+def render_admin_panel():
+    """Sidebar expander for admin user management."""
+    import secrets as _sec
+    import datetime as _dt
+
+    st.sidebar.divider()
+    with st.sidebar.expander("User Management (Admin)", expanded=False):
+        users = _load_users()
+
+        st.markdown("**Users**")
+        for u in users:
+            tag = ("Active" if u.get("is_active") else "**Inactive**") + \
+                  (" · 2FA on" if u.get("totp_enabled") else " · 2FA pending") + \
+                  (" · Admin" if u.get("is_admin") else "")
+            st.markdown(f"`{u['login']}` — {tag}")
+
+        st.markdown("---")
+        st.markdown("**Toggle active status**")
+        non_admin = [u["login"] for u in users if u["login"] != _ADMIN_LOGIN]
+        if non_admin:
+            toggle = st.selectbox("User", non_admin, key="adm_tog")
+            c1, c2 = st.columns(2)
+            if c1.button("Activate", key="adm_act", use_container_width=True):
+                for u in users:
+                    if u["login"] == toggle: u["is_active"] = True
+                ok = _save_users(users)
+                st.success(f"{toggle} activated." + ("" if ok else " (session only)"))
+                st.rerun()
+            if c2.button("Deactivate", key="adm_deact", use_container_width=True):
+                for u in users:
+                    if u["login"] == toggle: u["is_active"] = False
+                ok = _save_users(users)
+                st.success(f"{toggle} deactivated." + ("" if ok else " (session only)"))
+                st.rerun()
+        else:
+            st.caption("No other users to manage.")
+
+        st.markdown("---")
+        st.markdown("**Add new user**")
+        nl = st.text_input("Login name", key="adm_nl")
+        np = st.text_input("Password",   type="password", key="adm_np")
+        if st.button("Create", key="adm_create", use_container_width=True):
+            nl = sanitize_str(nl.strip(), 100)
+            if not nl or not np:
+                st.error("Both fields required.")
+            elif len(np) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif any(u["login"].strip().lower() == nl.lower() for u in users):
+                st.error(f"'{nl}' already exists.")
+            else:
+                _salt = os.urandom(16)
+                _key  = hashlib.pbkdf2_hmac("sha256", np.encode(), _salt, _PBKDF2_ITERS)
+                _totp = "".join(_sec.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(32))
+                users.append({
+                    "login": nl, "password_hash": _key.hex(), "salt": _salt.hex(),
+                    "is_admin": False, "is_active": True,
+                    "totp_secret": _totp, "totp_enabled": False,
+                    "created_at": str(_dt.date.today()),
+                })
+                ok = _save_users(users)
+                msg = f"'{nl}' created." + ("" if ok else " Commit users.json via manage_users.py to persist.")
+                st.success(msg)
+                st.rerun()
+
+
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Energy Intelligence Dashboard",
@@ -184,6 +522,7 @@ def init_state():
                 sel_scenario=None,sel_region=None,sel_driver=None,log=[])
     for k,v in defs.items():
         if k not in st.session_state: st.session_state[k]=v
+    _auth_init()
 init_state()
 
 # ── AGENT RUNNERS (cached, TTL=300s) ─────────────────────────────────────────
@@ -1089,6 +1428,19 @@ def render_sidebar():
         Commodity Probability Engine
       </div>
     </div>""", unsafe_allow_html=True)
+
+    # ── Logged-in user + logout ───────────────────────────────────────────────
+    auth_user = st.session_state.get("auth_user", "")
+    if auth_user:
+        st.sidebar.markdown(
+            f"<div style='font-size:10px;color:#4a6080;font-family:\'JetBrains Mono\',monospace;"
+            f"padding:4px 0 8px'>{auth_user}</div>",
+            unsafe_allow_html=True
+        )
+        if st.sidebar.button("Sign out", use_container_width=True, key="sidebar_logout"):
+            _auth_logout()
+            st.rerun()
+
     st.sidebar.divider()
 
     sess = st.session_state.get("_session_id", id(st.session_state))
@@ -1177,14 +1529,15 @@ def render_sidebar():
             st.session_state.update(sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
             st.rerun()
 
+    if st.session_state.get("auth_is_admin"):
+        render_admin_panel()
+
     st.sidebar.divider()
     st.sidebar.markdown("""
     <div style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace;line-height:1.8">
     Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">lsaggioro@potonmail.com</a>
     </div>""",unsafe_allow_html=True)
 
-
-# ── MAIN DASHBOARD ────────────────────────────────────────────────────────────
 def render_dashboard():
     result  = st.session_state.result
     agent   = st.session_state.agent
@@ -1237,6 +1590,8 @@ def render_dashboard():
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 def main():
+    if not render_auth_gate():
+        return
     render_sidebar()
     render_dashboard()
 
