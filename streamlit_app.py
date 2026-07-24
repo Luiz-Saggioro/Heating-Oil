@@ -22,6 +22,10 @@ import os
 import data_fetcher as _df
 import json
 import hashlib
+import smtplib
+import secrets as _secrets_mod
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Load .env if present (local dev)
 try:
@@ -131,6 +135,44 @@ limiter = _RateLimiter()
 
 _PBKDF2_ITERS = 260000
 _ADMIN_LOGIN  = "Luiz Saggioro"
+_ADMIN_EMAIL  = "lsaggioro@protonmail.com"
+
+
+def _send_signup_email(login: str, email: str) -> bool:
+    """Email Luiz when a new user requests access. Reads SMTP config from st.secrets."""
+    try:
+        cfg = st.secrets.get("smtp", {})
+        host = cfg.get("host", "")
+        port = int(cfg.get("port", 587))
+        user = cfg.get("user", "")
+        pwd  = cfg.get("password", "")
+        if not all([host, user, pwd]):
+            logger.warning("[AUTH] SMTP not configured — skipping email notification")
+            return False
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"[Energy Dashboard] Access request from {login}"
+        msg["From"]    = user
+        msg["To"]      = _ADMIN_EMAIL
+
+        body = (
+            f"A new user has requested access to the Energy Intelligence Dashboard.\n\n"
+            f"  Login name : {login}\n"
+            f"  Email      : {email or '(not provided)'}\n\n"
+            f"Log in as admin and open the 'User Management' panel in the sidebar "
+            f"to approve or reject this request."
+        )
+        msg.attach(MIMEText(body, "plain"))
+
+        with smtplib.SMTP(host, port) as smtp:
+            smtp.starttls()
+            smtp.login(user, pwd)
+            smtp.sendmail(user, _ADMIN_EMAIL, msg.as_string())
+        return True
+    except Exception as exc:
+        logger.error(f"[AUTH] send_signup_email failed: {exc}")
+        return False
+
 
 def _resolve_users_file() -> str:
     """Try several paths so the file is found both locally and on Streamlit Cloud."""
@@ -222,7 +264,7 @@ def _auth_init():
         auth_logged_in    = False,
         auth_user         = None,
         auth_is_admin     = False,
-        auth_step         = "login",    # "login" | "totp" | "totp_setup"
+        auth_step         = "login",    # "login" | "totp" | "totp_setup" | "signup"
         auth_pending_user = None,
         auth_error        = "",
     )
@@ -291,6 +333,16 @@ def render_login_form():
             st.session_state.auth_pending_user = user
             st.session_state.auth_step = "totp_setup" if not user.get("totp_enabled") else "totp"
             st.rerun()
+
+    st.markdown("<hr style='border-color:#1a2540;margin:24px 0 16px'>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='font-size:11px;color:#4a6080;text-align:center;margin-bottom:8px'>"
+        "Don't have access yet?</div>",
+        unsafe_allow_html=True
+    )
+    if st.button("Request Access", use_container_width=True, key="goto_signup"):
+        st.session_state.auth_step = "signup"
+        st.rerun()
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
@@ -396,6 +448,88 @@ def render_totp_setup():
     st.markdown("</div></div>", unsafe_allow_html=True)
 
 
+
+# ── Sign-up / access request form ────────────────────────────────────────────
+
+def render_signup_form():
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Request Access</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='auth-sub'>Fill in your details — the admin will approve your request</div>",
+        unsafe_allow_html=True
+    )
+
+    with st.form("signup_form", clear_on_submit=False):
+        new_login   = st.text_input("Full name (becomes your login)", placeholder="e.g. John Smith")
+        new_email   = st.text_input("Your email (optional — for follow-up)", placeholder="you@example.com")
+        new_pwd     = st.text_input("Choose a password", type="password")
+        new_pwd2    = st.text_input("Confirm password",  type="password")
+        submit      = st.form_submit_button("Send request", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if st.button("Back to login", key="signup_back"):
+        st.session_state.auth_step = "login"
+        st.rerun()
+
+    if submit:
+        new_login = sanitize_str(new_login.strip(), max_len=100)
+        if not new_login:
+            st.session_state.auth_error = "Full name is required."
+            st.rerun()
+        elif len(new_pwd) < 8:
+            st.session_state.auth_error = "Password must be at least 8 characters."
+            st.rerun()
+        elif new_pwd != new_pwd2:
+            st.session_state.auth_error = "Passwords do not match."
+            st.rerun()
+        elif _find_user(new_login):
+            st.session_state.auth_error = f"The name '{new_login}' is already taken or pending."
+            st.rerun()
+        else:
+            import os as _os2, datetime as _dt2
+            _salt = _os2.urandom(16)
+            _key  = hashlib.pbkdf2_hmac("sha256", new_pwd.encode(), _salt, _PBKDF2_ITERS)
+            _totp = "".join(_secrets_mod.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(32))
+            users = _load_users()
+            users.append({
+                "login":         new_login,
+                "email":         sanitize_str(new_email.strip(), 200),
+                "password_hash": _key.hex(),
+                "salt":          _salt.hex(),
+                "is_admin":      False,
+                "is_active":     False,   # inactive until admin approves
+                "pending":       True,
+                "totp_secret":   _totp,
+                "totp_enabled":  False,
+                "created_at":    str(_dt2.date.today()),
+            })
+            _save_users(users)
+            _send_signup_email(new_login, new_email.strip())
+            st.session_state.auth_step = "signup_done"
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+def render_signup_done():
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Request sent!</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='auth-sub'>The admin will review and activate your account</div>",
+        unsafe_allow_html=True
+    )
+    st.success("Your access request has been submitted. You will be able to log in once the admin approves it.")
+    if st.button("Back to login", key="done_back", use_container_width=True):
+        st.session_state.auth_step = "login"
+        st.rerun()
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
 # ── Auth gate dispatcher ──────────────────────────────────────────────────────
 
 def render_auth_gate() -> bool:
@@ -408,6 +542,10 @@ def render_auth_gate() -> bool:
         render_totp_form()
     elif step == "totp_setup":
         render_totp_setup()
+    elif step == "signup":
+        render_signup_form()
+    elif step == "signup_done":
+        render_signup_done()
     else:
         render_login_form()
     return False
@@ -424,16 +562,44 @@ def render_admin_panel():
     with st.sidebar.expander("User Management (Admin)", expanded=False):
         users = _load_users()
 
-        st.markdown("**Users**")
+        # ── Pending approvals (shown first) ──────────────────────────────
+        pending = [u for u in users if u.get("pending") and not u.get("is_active")]
+        if pending:
+            st.markdown("**Pending approval**")
+            for u in pending:
+                st.markdown(
+                    f"`{u['login']}`"
+                    + (f" · {u['email']}" if u.get("email") else "")
+                    + f" · requested {u.get('created_at', '—')}"
+                )
+                c1, c2 = st.columns(2)
+                if c1.button("Approve", key=f"appr_{u['login']}", use_container_width=True):
+                    for uu in users:
+                        if uu["login"] == u["login"]:
+                            uu["is_active"] = True
+                            uu["pending"]   = False
+                    _save_users(users)
+                    st.success(f"{u['login']} approved.")
+                    st.rerun()
+                if c2.button("Reject", key=f"rej_{u['login']}", use_container_width=True):
+                    users = [uu for uu in users if uu["login"] != u["login"]]
+                    _save_users(users)
+                    st.success(f"{u['login']} rejected and removed.")
+                    st.rerun()
+            st.markdown("---")
+
+        st.markdown("**All users**")
         for u in users:
-            tag = ("Active" if u.get("is_active") else "**Inactive**") + \
+            if u.get("pending") and not u.get("is_active"):
+                continue
+            tag = ("Active" if u.get("is_active") else "Inactive") + \
                   (" · 2FA on" if u.get("totp_enabled") else " · 2FA pending") + \
                   (" · Admin" if u.get("is_admin") else "")
             st.markdown(f"`{u['login']}` — {tag}")
 
         st.markdown("---")
         st.markdown("**Toggle active status**")
-        non_admin = [u["login"] for u in users if u["login"] != _ADMIN_LOGIN]
+        non_admin = [u["login"] for u in users if u["login"] != _ADMIN_LOGIN and not u.get("pending")]
         if non_admin:
             toggle = st.selectbox("User", non_admin, key="adm_tog")
             c1, c2 = st.columns(2)
@@ -1594,27 +1760,4 @@ def render_dashboard():
     if ho:
         render_eia_deep_dive(result)
         render_crack_spread(result, agent)
-        render_seasonal_pattern(result, agent)
-        render_var_es(result, agent)
-
-    section("--","MARKET SUMMARY")
-    with st.expander("View full summary",expanded=False):
-        st.code(result.get("summary",""),language=None)
-
-    with st.expander("Run log",expanded=False):
-        st.markdown('<div class="status-box">'+"\n".join(st.session_state.log or [])+"</div>",
-            unsafe_allow_html=True)
-
-    with st.expander("Security audit",expanded=False):
-        st.code(security_audit_report(),language=None)
-
-
-# ── ENTRY POINT ───────────────────────────────────────────────────────────────
-def main():
-    if not render_auth_gate():
-        return
-    render_sidebar()
-    render_dashboard()
-
-if __name__=="__main__":
-    main()
+        render_seasonal_pat
