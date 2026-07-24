@@ -1,0 +1,15 @@
+{
+  "_comment": "Credential store for Energy Intelligence Dashboard. Passwords hashed with PBKDF2-HMAC-SHA256, 260000 iterations. Edit via manage_users.py locally, then commit to GitHub.",
+  "users": [
+    {
+      "login": "Luiz Saggioro",
+      "password_hash": "9701f8839ccf18043780d02830ce1120c54252805f28d5814e4eda17efa25450",
+      "salt": "0766d533278129aee48ba15c7670bf0e",
+      "is_admin": true,
+      "is_active": true,
+      "totp_secret": "F27B6XM4QIDQUDTZALGSZL3LFX3ZALRS",
+      "totp_enabled": false,
+      "created_at": "2026-07-24"
+    }
+  ]
+}
