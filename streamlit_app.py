@@ -131,14 +131,30 @@ limiter = _RateLimiter()
 
 _PBKDF2_ITERS = 260000
 _ADMIN_LOGIN  = "Luiz Saggioro"
-_USERS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.json")
+
+def _resolve_users_file() -> str:
+    """Try several paths so the file is found both locally and on Streamlit Cloud."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.json"),
+        os.path.join(os.getcwd(), "users.json"),
+        "users.json",
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return candidates[0]   # fall back to first; will raise a clear error on open
 
 
 def _load_users() -> list:
+    path = _resolve_users_file()
     try:
-        with open(_USERS_FILE, "r", encoding="utf-8") as _f:
+        with open(path, "r", encoding="utf-8") as _f:
             return json.load(_f).get("users", [])
-    except Exception:
+    except FileNotFoundError:
+        logger.error(f"[AUTH] users.json not found at {path} — check repo contains the file")
+        return []
+    except Exception as exc:
+        logger.error(f"[AUTH] Failed to load users.json: {exc}")
         return []
 
 
@@ -178,10 +194,11 @@ def _totp_uri(secret: str, login: str) -> str:
 
 
 def _save_users(users: list) -> bool:
+    path = _resolve_users_file()
     try:
         db = {"_comment": "Managed via manage_users.py. Commit to GitHub to persist.",
               "users": users}
-        with open(_USERS_FILE, "w", encoding="utf-8") as _f:
+        with open(path, "w", encoding="utf-8") as _f:
             json.dump(db, _f, indent=2)
         return True
     except Exception as exc:
@@ -250,6 +267,10 @@ def render_login_form():
     st.markdown("<div class='auth-title'>Energy Intelligence</div>", unsafe_allow_html=True)
     st.markdown("<div class='auth-sub'>Secure access — sign in to continue</div>",
                 unsafe_allow_html=True)
+
+    # Warn immediately if users.json is missing — avoids silent failure
+    if not os.path.isfile(_resolve_users_file()):
+        st.warning("⚠️ users.json not found in the repo. Add the file and redeploy.")
 
     with st.form("login_form", clear_on_submit=False):
         login    = st.text_input("Login name", placeholder="e.g. Luiz Saggioro")
