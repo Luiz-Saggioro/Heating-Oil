@@ -8,6 +8,7 @@ plotly
 yfinance
 requests
 python-dotenv
+matplotlib
 
 # Authentication
 pyotp          # TOTP two-factor authentication
