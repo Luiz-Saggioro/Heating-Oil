@@ -1,12 +1,13 @@
 """
 Energy Intelligence Dashboard — Streamlit Edition
 HO + WTI/Oil. All emojis removed from UI labels.
-Security: rate-limiting, input sanitization, env-var secrets.
-Changes v2.1:
-  - Fix: "1 Day" intraday now shows last trading session (2d lookback, 13 bars)
-         instead of duplicating "1 Week" (7d lookback, 168 bars)
-  - Fix: Price history chart height increased 340 → 480 for better readability
-  - Add: "Refresh Data" button in sidebar to force-bust the 5-min cache
+Security: rate-limiting, input sanitization, env-var secrets, login + 2FA.
+Changes v3.0:
+  - Add: Login gate with PBKDF2 password verification
+  - Add: TOTP two-factor authentication (Google Authenticator / Authy)
+  - Add: Admin user management panel (add / deactivate users)
+  - Add: Logout button in sidebar
+  - Note: users stored in users.json; manage locally via manage_users.py
 """
 
 import streamlit as st
@@ -19,6 +20,8 @@ from plotly.subplots import make_subplots
 import datetime
 import os
 import data_fetcher as _df
+import json
+import hashlib
 
 # Load .env if present (local dev)
 try:
@@ -121,6 +124,362 @@ def security_audit_report() -> str:
 
 limiter = _RateLimiter()
 
+
+# ── INLINED AUTH MODULE ───────────────────────────────────────────────────────
+# Users stored in users.json (PBKDF2 hashed passwords + TOTP secrets).
+# Manage users locally with manage_users.py, then commit to GitHub.
+
+_PBKDF2_ITERS = 260000
+_ADMIN_LOGIN  = "Luiz Saggioro"
+
+def _resolve_users_file() -> str:
+    """Try several paths so the file is found both locally and on Streamlit Cloud."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.json"),
+        os.path.join(os.getcwd(), "users.json"),
+        "users.json",
+    ]
+    for p in candidates:
+        if os.path.isfile(p):
+            return p
+    return candidates[0]   # fall back to first; will raise a clear error on open
+
+
+def _load_users() -> list:
+    path = _resolve_users_file()
+    try:
+        with open(path, "r", encoding="utf-8") as _f:
+            return json.load(_f).get("users", [])
+    except FileNotFoundError:
+        logger.error(f"[AUTH] users.json not found at {path} — check repo contains the file")
+        return []
+    except Exception as exc:
+        logger.error(f"[AUTH] Failed to load users.json: {exc}")
+        return []
+
+
+def _find_user(login: str):
+    for u in _load_users():
+        if u.get("login", "").strip().lower() == login.strip().lower():
+            return u
+    return None
+
+
+def _verify_password(user: dict, password: str) -> bool:
+    try:
+        salt     = bytes.fromhex(user["salt"])
+        expected = user["password_hash"]
+        key      = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERS)
+        return key.hex() == expected
+    except Exception:
+        return False
+
+
+def _verify_totp(secret: str, code: str) -> bool:
+    """Returns True if code matches.  Fails open only when pyotp is missing."""
+    try:
+        import pyotp
+        return pyotp.TOTP(secret).verify(code.strip(), valid_window=1)
+    except ImportError:
+        logger.warning("[AUTH] pyotp not installed — skipping TOTP check")
+        return True
+
+
+def _totp_uri(secret: str, login: str) -> str:
+    try:
+        import pyotp
+        return pyotp.TOTP(secret).provisioning_uri(name=login, issuer_name="Energy Intelligence")
+    except ImportError:
+        return ""
+
+
+def _save_users(users: list) -> bool:
+    path = _resolve_users_file()
+    try:
+        db = {"_comment": "Managed via manage_users.py. Commit to GitHub to persist.",
+              "users": users}
+        with open(path, "w", encoding="utf-8") as _f:
+            json.dump(db, _f, indent=2)
+        return True
+    except Exception as exc:
+        logger.error(f"[AUTH] save_users failed: {exc}")
+        return False
+
+
+def _mark_totp_enabled(login: str) -> None:
+    users = _load_users()
+    for u in users:
+        if u.get("login", "").strip().lower() == login.strip().lower():
+            u["totp_enabled"] = True
+            break
+    _save_users(users)
+
+
+# ── Auth session helpers ──────────────────────────────────────────────────────
+
+def _auth_init():
+    defaults = dict(
+        auth_logged_in    = False,
+        auth_user         = None,
+        auth_is_admin     = False,
+        auth_step         = "login",    # "login" | "totp" | "totp_setup"
+        auth_pending_user = None,
+        auth_error        = "",
+    )
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+
+def _auth_logout():
+    for k in ["auth_logged_in","auth_user","auth_is_admin",
+              "auth_step","auth_pending_user","auth_error"]:
+        st.session_state.pop(k, None)
+
+
+# ── Auth CSS ──────────────────────────────────────────────────────────────────
+
+_AUTH_CSS = """
+<style>
+.auth-wrap{max-width:400px;margin:80px auto;}
+.auth-card{
+  padding:40px 36px;background:#0a0e18;
+  border:1px solid #1a2540;border-radius:12px;
+}
+.auth-title{
+  font-size:22px;font-weight:800;color:#c8d8ec;
+  font-family:'Syne',sans-serif;margin-bottom:4px;
+}
+.auth-sub{
+  font-size:10px;color:#4a6080;
+  font-family:'JetBrains Mono',monospace;
+  letter-spacing:1.2px;text-transform:uppercase;margin-bottom:28px;
+}
+</style>
+"""
+
+
+# ── Login form (step 1) ───────────────────────────────────────────────────────
+
+def render_login_form():
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Energy Intelligence</div>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-sub'>Secure access — sign in to continue</div>",
+                unsafe_allow_html=True)
+
+    # Warn immediately if users.json is missing — avoids silent failure
+    if not os.path.isfile(_resolve_users_file()):
+        st.warning("⚠️ users.json not found in the repo. Add the file and redeploy.")
+
+    with st.form("login_form", clear_on_submit=False):
+        login    = st.text_input("Login name", placeholder="e.g. Luiz Saggioro")
+        password = st.text_input("Password", type="password")
+        submit   = st.form_submit_button("Sign in", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if submit:
+        login = sanitize_str(login.strip(), max_len=100)
+        user  = _find_user(login)
+        if not user or not user.get("is_active", False) or not _verify_password(user, password):
+            st.session_state.auth_error = "Invalid credentials or account inactive."
+            st.rerun()
+        else:
+            st.session_state.auth_pending_user = user
+            st.session_state.auth_step = "totp_setup" if not user.get("totp_enabled") else "totp"
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── TOTP verification (step 2, returning users) ───────────────────────────────
+
+def render_totp_form():
+    user = st.session_state.auth_pending_user
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Two-Factor Auth</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='auth-sub'>Enter the 6-digit code for {user['login']}</div>",
+                unsafe_allow_html=True)
+
+    with st.form("totp_form", clear_on_submit=True):
+        code   = st.text_input("Authenticator code", max_chars=6, placeholder="000000")
+        submit = st.form_submit_button("Verify", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if st.button("Back to login", key="totp_back"):
+        st.session_state.auth_step = "login"
+        st.session_state.auth_pending_user = None
+        st.rerun()
+
+    if submit:
+        if _verify_totp(user["totp_secret"], code):
+            st.session_state.auth_logged_in    = True
+            st.session_state.auth_user         = user["login"]
+            st.session_state.auth_is_admin     = user.get("is_admin", False)
+            st.session_state.auth_step         = "login"
+            st.session_state.auth_pending_user = None
+            st.rerun()
+        else:
+            st.session_state.auth_error = "Incorrect code — try again."
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── TOTP first-time setup (step 2, new users) ────────────────────────────────
+
+def render_totp_setup():
+    user   = st.session_state.auth_pending_user
+    secret = user["totp_secret"]
+    uri    = _totp_uri(secret, user["login"])
+
+    st.markdown(_AUTH_CSS, unsafe_allow_html=True)
+    st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-title'>Set up Two-Factor Auth</div>", unsafe_allow_html=True)
+    st.markdown("<div class='auth-sub'>One-time setup — scan QR or enter key manually</div>",
+                unsafe_allow_html=True)
+
+    qr_ok = False
+    if uri:
+        try:
+            import qrcode, io
+            buf = io.BytesIO()
+            qrcode.make(uri).save(buf, format="PNG")
+            buf.seek(0)
+            st.image(buf, caption="Scan with Google Authenticator / Authy / 1Password", width=240)
+            qr_ok = True
+        except ImportError:
+            pass
+
+    if not qr_ok:
+        st.markdown("**Add manually in your authenticator app:**")
+        if uri:
+            st.code(uri, language=None)
+
+    st.markdown("**Secret key (manual entry):**")
+    st.code(secret, language=None)
+    st.caption("Time-based (TOTP) · issuer: Energy Intelligence")
+
+    with st.form("totp_setup_form", clear_on_submit=True):
+        code   = st.text_input("Confirm with a 6-digit code", max_chars=6, placeholder="000000")
+        submit = st.form_submit_button("Confirm & sign in", use_container_width=True)
+
+    if st.session_state.auth_error:
+        st.error(st.session_state.auth_error)
+        st.session_state.auth_error = ""
+
+    if st.button("Back to login", key="setup_back"):
+        st.session_state.auth_step = "login"
+        st.session_state.auth_pending_user = None
+        st.rerun()
+
+    if submit:
+        if _verify_totp(secret, code):
+            _mark_totp_enabled(user["login"])
+            st.session_state.auth_logged_in    = True
+            st.session_state.auth_user         = user["login"]
+            st.session_state.auth_is_admin     = user.get("is_admin", False)
+            st.session_state.auth_step         = "login"
+            st.session_state.auth_pending_user = None
+            st.rerun()
+        else:
+            st.session_state.auth_error = "Incorrect code — make sure you scanned the right key."
+            st.rerun()
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+
+# ── Auth gate dispatcher ──────────────────────────────────────────────────────
+
+def render_auth_gate() -> bool:
+    """Call before any dashboard content. Returns True if user is authenticated."""
+    _auth_init()
+    if st.session_state.auth_logged_in:
+        return True
+    step = st.session_state.auth_step
+    if step == "totp":
+        render_totp_form()
+    elif step == "totp_setup":
+        render_totp_setup()
+    else:
+        render_login_form()
+    return False
+
+
+# ── Admin panel (sidebar) ─────────────────────────────────────────────────────
+
+def render_admin_panel():
+    """Sidebar expander for admin user management."""
+    import secrets as _sec
+    import datetime as _dt
+
+    st.sidebar.divider()
+    with st.sidebar.expander("User Management (Admin)", expanded=False):
+        users = _load_users()
+
+        st.markdown("**Users**")
+        for u in users:
+            tag = ("Active" if u.get("is_active") else "**Inactive**") + \
+                  (" · 2FA on" if u.get("totp_enabled") else " · 2FA pending") + \
+                  (" · Admin" if u.get("is_admin") else "")
+            st.markdown(f"`{u['login']}` — {tag}")
+
+        st.markdown("---")
+        st.markdown("**Toggle active status**")
+        non_admin = [u["login"] for u in users if u["login"] != _ADMIN_LOGIN]
+        if non_admin:
+            toggle = st.selectbox("User", non_admin, key="adm_tog")
+            c1, c2 = st.columns(2)
+            if c1.button("Activate", key="adm_act", use_container_width=True):
+                for u in users:
+                    if u["login"] == toggle: u["is_active"] = True
+                ok = _save_users(users)
+                st.success(f"{toggle} activated." + ("" if ok else " (session only)"))
+                st.rerun()
+            if c2.button("Deactivate", key="adm_deact", use_container_width=True):
+                for u in users:
+                    if u["login"] == toggle: u["is_active"] = False
+                ok = _save_users(users)
+                st.success(f"{toggle} deactivated." + ("" if ok else " (session only)"))
+                st.rerun()
+        else:
+            st.caption("No other users to manage.")
+
+        st.markdown("---")
+        st.markdown("**Add new user**")
+        nl = st.text_input("Login name", key="adm_nl")
+        np = st.text_input("Password",   type="password", key="adm_np")
+        if st.button("Create", key="adm_create", use_container_width=True):
+            nl = sanitize_str(nl.strip(), 100)
+            if not nl or not np:
+                st.error("Both fields required.")
+            elif len(np) < 8:
+                st.error("Password must be at least 8 characters.")
+            elif any(u["login"].strip().lower() == nl.lower() for u in users):
+                st.error(f"'{nl}' already exists.")
+            else:
+                _salt = os.urandom(16)
+                _key  = hashlib.pbkdf2_hmac("sha256", np.encode(), _salt, _PBKDF2_ITERS)
+                _totp = "".join(_sec.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567") for _ in range(32))
+                users.append({
+                    "login": nl, "password_hash": _key.hex(), "salt": _salt.hex(),
+                    "is_admin": False, "is_active": True,
+                    "totp_secret": _totp, "totp_enabled": False,
+                    "created_at": str(_dt.date.today()),
+                })
+                ok = _save_users(users)
+                msg = f"'{nl}' created." + ("" if ok else " Commit users.json via manage_users.py to persist.")
+                st.success(msg)
+                st.rerun()
+
+
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Energy Intelligence Dashboard",
@@ -184,6 +543,7 @@ def init_state():
                 sel_scenario=None,sel_region=None,sel_driver=None,log=[])
     for k,v in defs.items():
         if k not in st.session_state: st.session_state[k]=v
+    _auth_init()
 init_state()
 
 # ── AGENT RUNNERS (cached, TTL=300s) ─────────────────────────────────────────
@@ -1078,270 +1438,6 @@ def render_var_es(result, agent):
         (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
 
 
-# ── ⑤ HO CONTRACT PROBABILITY TABLES ─────────────────────────────────────────
-def render_contract_tables(result, agent):
-    """
-    Section 05 — HO-specific.
-    Table 1: Probability each contract touches the KO price before expiry.
-             Uses the reflection-principle first-passage formula for GBM.
-    Table 2: Probability distribution of price AT expiration (lognormal bins).
-             Consistent bin structure with ho_agent.py (HO_PRICE_BINS / BIN_EDGES).
-    """
-    if agent != "ho":
-        return
-
-    section("05", "HO CONTRACT PROBABILITY TABLES",
-            "KO touch · Expiry distribution — 13 monthly contracts")
-
-    from scipy.stats import norm as _norm
-    import calendar as _cal
-
-    # ── Market data & volatility ──────────────────────────────────────────────
-    ho    = result.get("ho_price", result.get("market_data", {}).get("HO", 3.50))
-    rets  = result.get("returns", [])
-    r_arr = np.array(rets) if len(rets) > 5 else np.random.normal(0, 0.015, 60)
-    sig_d = float(np.std(r_arr, ddof=1)) or 0.015
-    sig_a = sig_d * np.sqrt(252)                       # annualised vol
-    mu_d  = float(np.mean(r_arr))                      # daily log-return mean
-    nu_hist = mu_d * 252 - 0.5 * sig_a ** 2           # annualised log-drift (historical)
-
-    # ── Date helpers ──────────────────────────────────────────────────────────
-    def _last_biz(year, month):
-        """Last business day of the given calendar month."""
-        last = _cal.monthrange(year, month)[1]
-        d = datetime.date(year, month, last)
-        while d.weekday() >= 5:          # Sat=5, Sun=6
-            d -= datetime.timedelta(days=1)
-        return d
-
-    def _ho_expiry(cy, cm):
-        """NYMEX HO expires on the last business day of the month preceding
-        the contract delivery month (e.g., Sep 2026 contract → last biz day Aug 2026)."""
-        ey, em = (cy - 1, 12) if cm == 1 else (cy, cm - 1)
-        return _last_biz(ey, em)
-
-    # ── KO touch probability (reflection principle for GBM) ───────────────────
-    def _ko_prob(S0, KO, T, sig, nu=0.0):
-        """
-        P(S_t hits KO at any t in [0,T]) for a lognormal process.
-
-        Derivation: let X_t = log(S_t/S_0) = nu*t + sig*W_t.
-        First-passage probability to log(KO/S0) in continuous time:
-
-          b < 0 (KO below S0):
-            P = N((b - nu*T)/(sig*√T)) + exp(2*nu*b/sig²) * N((b + nu*T)/(sig*√T))
-
-          b > 0 (KO above S0):
-            P = N((-b + nu*T)/(sig*√T)) + exp(2*nu*b/sig²) * N((-b - nu*T)/(sig*√T))
-
-        where b = log(KO/S0), nu = annualised log-drift, sig = annualised vol.
-        """
-        if T < 1 / 252 or sig <= 0 or S0 <= 0 or KO <= 0:
-            return 0.0
-        if abs(KO - S0) / S0 < 1e-5:
-            return 1.0
-        b  = float(np.log(KO / S0))
-        st = sig * np.sqrt(T)
-        # Clip exponent to avoid overflow
-        e2 = float(np.clip(2.0 * nu * b / (sig ** 2), -50.0, 50.0))
-        if b < 0:   # barrier below current price
-            p = (_norm.cdf((b - nu * T) / st)
-                 + np.exp(e2) * _norm.cdf((b + nu * T) / st))
-        else:       # barrier above current price
-            p = (_norm.cdf((-b + nu * T) / st)
-                 + np.exp(e2) * _norm.cdf((-b - nu * T) / st))
-        return float(np.clip(p, 0.0, 1.0))
-
-    # ── Expiry price distribution (lognormal bins, matches ho_agent.py) ────────
-    BIN_LABELS = [
-        "<1.80", "1.80–2.20", "2.20–2.60", "2.60–3.00",
-        "3.00–3.30", "3.30–3.69", "3.69–4.10", "4.10–4.60",
-        "4.60–5.10", "5.10–5.70", "5.70–6.25", ">6.25",
-    ]
-    _BIN_EDGES = [-np.inf, 1.80, 2.20, 2.60, 3.00,
-                  3.30, 3.69, 4.10, 4.60, 5.10, 5.70, 6.25, np.inf]
-
-    def _expiry_probs(S0, T, sig, nu=0.0):
-        """
-        Probability of settling in each price bin at expiry.
-        log(S_T) ~ N(log(S0) - 0.5*sig²*T + nu*T, sig²*T)
-        nu=0 → martingale / zero-drift (consistent with ho_agent lognormal_probs default).
-        """
-        lm = np.log(S0) - 0.5 * sig ** 2 * T + nu * T
-        ls = sig * np.sqrt(T)
-        probs = []
-        for i in range(len(_BIN_EDGES) - 1):
-            lo, hi = _BIN_EDGES[i], _BIN_EDGES[i + 1]
-            p_lo = _norm.cdf(np.log(max(lo, 1e-6)), loc=lm, scale=ls) if lo > -np.inf else 0.0
-            p_hi = _norm.cdf(np.log(hi),             loc=lm, scale=ls) if hi < np.inf  else 1.0
-            probs.append(max(0.0, p_hi - p_lo))
-        t = sum(probs) or 1.0
-        return [round(p / t * 100, 1) for p in probs]
-
-    # ── Build 13-contract list (front month → +12) ────────────────────────────
-    today = datetime.date.today()
-    contracts = []
-    for i in range(13):
-        raw_m = today.month + i
-        cy    = today.year + (raw_m - 1) // 12
-        cm    = ((raw_m - 1) % 12) + 1
-        exp   = _ho_expiry(cy, cm)
-        T     = max((exp - today).days / 365.25, 1 / 252)
-        contracts.append({
-            "label":  f"{_cal.month_abbr[cm]} {cy}",
-            "expiry": exp,
-            "T":      T,
-            "fwd":    ho,   # flat-forward proxy; all contracts anchored to current spot
-        })
-
-    # ── User controls ──────────────────────────────────────────────────────────
-    col_ctrl1, col_ctrl2 = st.columns([3, 1])
-    with col_ctrl1:
-        ko = st.number_input(
-            "KO Price ($/gal) — applies to all contracts in Table 1",
-            min_value=0.50, max_value=10.00,
-            value=round(float(ho) * 0.85, 2),   # default: 15 % below spot
-            step=0.05, format="%.2f",
-            key="ko_price_input",
-            help=(
-                "Knock-Out barrier price. "
-                "The table shows the probability that each contract's price "
-                "touches this level at any point before expiration."
-            ),
-        )
-    with col_ctrl2:
-        use_drift = st.checkbox(
-            "Apply historical drift",
-            value=False,
-            key="ko_use_drift",
-            help=(
-                "Checked: uses the historical mean log-return as drift in the barrier model. "
-                "Unchecked: zero-drift (risk-neutral / conservative default)."
-            ),
-        )
-    nu = nu_hist if use_drift else 0.0
-
-    # ── CSS constants ─────────────────────────────────────────────────────────
-    _TH = (
-        "padding:8px 14px;background:#0d1220;color:#4a6080;"
-        "font-family:'JetBrains Mono',monospace;font-size:9px;"
-        "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #1a2540;text-align:center;"
-    )
-    _TD = (
-        "padding:7px 14px;font-family:'JetBrains Mono',monospace;"
-        "font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
-    )
-    _TH2 = (
-        "padding:6px 10px;background:#0d1220;color:#4a6080;"
-        "font-family:'JetBrains Mono',monospace;font-size:8px;"
-        "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
-    )
-    _TD2 = (
-        "padding:6px 10px;font-family:'JetBrains Mono',monospace;"
-        "font-size:10px;border-bottom:1px solid #0f1825;text-align:center;"
-    )
-    _HDR = (
-        "margin:12px 0 4px;font-size:12px;font-weight:700;color:#c8d8ec;"
-        "font-family:'JetBrains Mono',monospace;"
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # TABLE 1 — KO Touch Probability
-    # ══════════════════════════════════════════════════════════════════════════
-    drift_label = (
-        f"historical ({nu_hist * 100:+.2f}% ann.)" if use_drift else "zero (neutral)"
-    )
-    st.markdown(
-        f"<div style='{_HDR}'>Table 1 — Probability of Touching KO Price Before Expiration</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        f"KO = **${ko:.2f}/gal** · Ann. vol = **{sig_a * 100:.1f}%** · "
-        f"Drift = **{drift_label}** · Model: GBM reflection-principle"
-    )
-
-    t1_headers = ["Contract", "Expiration Date", "Fwd Price ($/gal)", "KO Price ($/gal)", "P(Touch KO)"]
-    heads_t1   = "".join(f'<th style="{_TH}">{h}</th>' for h in t1_headers)
-    rows_t1    = ""
-    for c in contracts:
-        p   = _ko_prob(c["fwd"], ko, c["T"], sig_a, nu)
-        pct = round(p * 100, 1)
-        # Colour-code by risk level
-        if pct >= 75:
-            pclr = "#ff3d5a"      # red   — high probability
-        elif pct >= 50:
-            pclr = "#ffd060"      # yellow
-        elif pct >= 25:
-            pclr = "#f5a623"      # orange
-        else:
-            pclr = "#1df5a0"      # green  — low probability
-        rows_t1 += (
-            f'<tr>'
-            f'<td style="{_TD}color:#c8d8ec;font-weight:600">{c["label"]}</td>'
-            f'<td style="{_TD}color:#4a6080">{c["expiry"].strftime("%b %d, %Y")}</td>'
-            f'<td style="{_TD}color:#c8d8ec">${c["fwd"]:.4f}</td>'
-            f'<td style="{_TD}color:#9d7aff">${ko:.4f}</td>'
-            f'<td style="{_TD}color:{pclr};font-weight:700">{pct:.1f}%</td>'
-            f'</tr>'
-        )
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:28px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
-        f'<thead><tr>{heads_t1}</tr></thead><tbody>{rows_t1}</tbody></table></div>',
-        unsafe_allow_html=True,
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # TABLE 2 — Expiry Price Distribution
-    # ══════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        f"<div style='{_HDR}'>Table 2 — Probability Distribution at Expiration (12-Month Forward)</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        f"Log-normal model · Ann. vol = **{sig_a * 100:.1f}%** · "
-        f"Drift = **{'historical' if use_drift else 'zero'}** · "
-        f"Orange = highest-probability bin per row"
-    )
-
-    heads_t2 = f'<th style="{_TH2}">Contract</th><th style="{_TH2}">Expiry</th>'
-    for bl in BIN_LABELS:
-        heads_t2 += f'<th style="{_TH2}">{bl}</th>'
-
-    rows_t2 = ""
-    for c in contracts:
-        probs = _expiry_probs(c["fwd"], c["T"], sig_a, nu)
-        maxp  = max(probs)
-        cells = (
-            f'<td style="{_TD2}color:#c8d8ec;font-weight:600">{c["label"]}</td>'
-            f'<td style="{_TD2}color:#4a6080">{c["expiry"].strftime("%b %Y")}</td>'
-        )
-        for p in probs:
-            if p == maxp:
-                clr, fw = "#f5a623", "700"        # orange — modal bin
-            elif p >= 15:
-                clr, fw = "#c8d8ec", "500"
-            elif p >= 5:
-                clr, fw = "#4a6080", "400"
-            else:
-                clr, fw = "#2a3850", "400"        # dim — negligible
-            cells += f'<td style="{_TD2}color:{clr};font-weight:{fw}">{p:.1f}%</td>'
-        rows_t2 += f"<tr>{cells}</tr>"
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
-        f'<thead><tr>{heads_t2}</tr></thead><tbody>{rows_t2}</tbody></table></div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        "Fwd Price = current HO spot (flat-forward proxy). "
-        "Probabilities are model outputs — not financial advice."
-    )
-
-
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 def render_sidebar():
     st.sidebar.markdown("""
@@ -1353,6 +1449,19 @@ def render_sidebar():
         Commodity Probability Engine
       </div>
     </div>""", unsafe_allow_html=True)
+
+    # ── Logged-in user + logout ───────────────────────────────────────────────
+    auth_user = st.session_state.get("auth_user", "")
+    if auth_user:
+        st.sidebar.markdown(
+            f"<div style='font-size:10px;color:#4a6080;font-family:\'JetBrains Mono\',monospace;"
+            f"padding:4px 0 8px'>{auth_user}</div>",
+            unsafe_allow_html=True
+        )
+        if st.sidebar.button("Sign out", use_container_width=True, key="sidebar_logout"):
+            _auth_logout()
+            st.rerun()
+
     st.sidebar.divider()
 
     sess = st.session_state.get("_session_id", id(st.session_state))
@@ -1441,14 +1550,15 @@ def render_sidebar():
             st.session_state.update(sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
             st.rerun()
 
+    if st.session_state.get("auth_is_admin"):
+        render_admin_panel()
+
     st.sidebar.divider()
     st.sidebar.markdown("""
     <div style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace;line-height:1.8">
     Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">lsaggioro@potonmail.com</a>
     </div>""",unsafe_allow_html=True)
 
-
-# ── MAIN DASHBOARD ────────────────────────────────────────────────────────────
 def render_dashboard():
     result  = st.session_state.result
     agent   = st.session_state.agent
@@ -1482,7 +1592,6 @@ def render_dashboard():
     render_regional(result, agent, sel_reg)
 
     if ho:
-        render_contract_tables(result, agent)
         render_eia_deep_dive(result)
         render_crack_spread(result, agent)
         render_seasonal_pattern(result, agent)
@@ -1502,6 +1611,8 @@ def render_dashboard():
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 def main():
+    if not render_auth_gate():
+        return
     render_sidebar()
     render_dashboard()
 
