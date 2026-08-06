@@ -54,6 +54,13 @@ CUSTOM_BANDS = [
     ("P(<1.80)",     -np.inf, 1.80    ),
 ]
 
+# Month abbreviations for contract labeling
+MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+
+# Default display bins for expiry distribution table (Table 2)
+DISPLAY_BIN_EDGES  = [-np.inf, 2.00, 2.50, 3.00, 3.50, 4.00, 4.50, np.inf]
+DISPLAY_BIN_LABELS = ["<$2.00","$2.00-2.50","$2.50-3.00","$3.00-3.50","$3.50-4.00","$4.00-4.50",">$4.50"]
+
 
 def _eia_key():
     """
@@ -216,6 +223,194 @@ def build_crack_spread_history(ho_history, wti_history):
     ]
 
 
+# ── Forward Curve, KO Barrier & Expiry Distribution ──────────────────────────
+
+def _last_biz_day(year, month):
+    """Return the last business day (Mon–Fri) of the given year/month."""
+    import calendar
+    last = calendar.monthrange(year, month)[1]
+    d = datetime.date(year, month, last)
+    while d.weekday() >= 5:          # 5=Sat, 6=Sun
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def get_ho_contract_schedule(spot_price, sigma_daily, today=None):
+    """
+    Build 13 monthly HO contract rows (front month + next 12).
+    HO futures expire on the last business day of the month PRIOR to delivery.
+    Forward prices use a flat curve with a light seasonal overlay.
+
+    Returns a list of dicts with keys:
+      label, expiry_date, t_days (trading-day equivalent), fwd_price, sigma_daily
+    """
+    if today is None:
+        today = datetime.date.today()
+
+    # Locate the front delivery month: first month whose expiry (= last biz day of
+    # the prior month) is still on or after today.
+    y, m = today.year, today.month
+    for _ in range(14):                        # safety cap
+        exp_m, exp_y = m - 1, y
+        if exp_m == 0:
+            exp_m, exp_y = 12, y - 1
+        if _last_biz_day(exp_y, exp_m) >= today:
+            break
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+
+    # Seasonal multipliers — mild winter premium, otherwise flat
+    seasonal_mult = {
+        "Nov": 1.020, "Dec": 1.030, "Jan": 1.025,
+        "Feb": 1.015, "Mar": 1.005,
+    }
+
+    contracts = []
+    for _ in range(13):
+        exp_m, exp_y = m - 1, y
+        if exp_m == 0:
+            exp_m, exp_y = 12, y - 1
+        exp_date    = _last_biz_day(exp_y, exp_m)
+        t_cal       = max(1, (exp_date - today).days)
+        # Convert calendar days to approximate trading days (252 / 365 ratio)
+        t_days      = max(1, round(t_cal * 252 / 365))
+        month_label = MONTH_ABBR[m - 1]
+        fwd_price   = round(spot_price * seasonal_mult.get(month_label, 1.0), 4)
+        contracts.append({
+            "label":       "{} {}".format(month_label, y),
+            "expiry_date": str(exp_date),
+            "t_days":      t_days,           # trading days (used for vol scaling)
+            "t_cal":       t_cal,            # calendar days (for reference)
+            "fwd_price":   fwd_price,
+            "sigma_daily": sigma_daily,
+        })
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+
+    return contracts
+
+
+def barrier_touch_prob(S, B, T_days, sigma_daily, drift_daily=0.0):
+    """
+    Probability that a GBM price touches barrier B at any time in [0, T_days].
+    Uses the reflection-principle formula for log-normal diffusion.
+
+    Parameters
+    ----------
+    S           : current / forward futures price
+    B           : knock-out barrier price
+    T_days      : trading days to expiry
+    sigma_daily : daily log-return volatility
+    drift_daily : log-drift per trading day; 0 = risk-neutral martingale (default for futures)
+
+    Formula (unified for upper & lower barriers):
+        c = ln(B / S)           — signed log-distance
+        d1 = (m·T − |c|) / (σ·√T)
+        d2 = (−m·T − |c|) / (σ·√T)
+        P = Φ(d1) + exp(2·m·c / σ²) · Φ(d2)
+
+    Zero-drift simplification: P = 2·Φ(−|c| / (σ·√T))
+    """
+    from scipy.stats import norm as _norm
+    if S <= 0 or B <= 0 or sigma_daily <= 0 or T_days <= 0:
+        return 0.0
+    if abs(S - B) < 1e-8:
+        return 1.0          # already at the barrier
+    c     = float(np.log(B / S))
+    abs_c = abs(c)
+    sT    = sigma_daily * float(np.sqrt(T_days))
+    m     = drift_daily
+
+    if abs(m) < 1e-10:
+        prob = 2.0 * float(_norm.cdf(-abs_c / sT))
+    else:
+        d1   = (m * T_days - abs_c) / sT
+        d2   = (-m * T_days - abs_c) / sT
+        prob = float(_norm.cdf(d1)) + float(np.exp(2.0 * m * c / sigma_daily**2)) * float(_norm.cdf(d2))
+
+    return float(np.clip(prob, 0.0, 1.0))
+
+
+def compute_ko_probabilities(contracts, ko_price):
+    """
+    Table 1: For each contract compute P(price touches ko_price before expiry).
+
+    Parameters
+    ----------
+    contracts : list of dicts from get_ho_contract_schedule()
+    ko_price  : float — the knock-out barrier ($/gal)
+
+    Returns a list of dicts with keys:
+      label, expiry, fwd_price, ko_price, ko_prob (%), t_days
+    """
+    rows = []
+    for c in contracts:
+        sig  = c.get("sigma_daily") or 0.015
+        prob = barrier_touch_prob(c["fwd_price"], ko_price, c["t_days"], sig)
+        rows.append({
+            "label":     c["label"],
+            "expiry":    c["expiry_date"],
+            "fwd_price": c["fwd_price"],
+            "ko_price":  round(float(ko_price), 4),
+            "ko_prob":   round(prob * 100, 2),
+            "t_days":    c["t_days"],
+        })
+    return rows
+
+
+def compute_expiry_distributions(contracts, sigma_daily, bin_edges=None, bin_labels=None):
+    """
+    Table 2: For each contract compute the lognormal settlement distribution.
+
+    Parameters
+    ----------
+    contracts   : list of dicts from get_ho_contract_schedule()
+    sigma_daily : daily volatility (used as fallback if contract doesn't carry its own)
+    bin_edges   : list of floats (±inf allowed) defining N+1 edges for N bins.
+                  Defaults to DISPLAY_BIN_EDGES.
+    bin_labels  : list of N label strings. Defaults to DISPLAY_BIN_LABELS.
+
+    Returns a list of dicts with keys:
+      label, expiry, fwd_price, t_days, bin_probs (list of % per bin), bin_labels
+    """
+    from scipy.stats import norm as _norm
+    if bin_edges is None:
+        bin_edges  = DISPLAY_BIN_EDGES
+    if bin_labels is None:
+        bin_labels = DISPLAY_BIN_LABELS
+
+    rows = []
+    for c in contracts:
+        sig = c.get("sigma_daily") or sigma_daily or 0.015
+        S   = c["fwd_price"]
+        T   = c["t_days"]
+        # Lognormal params — zero drift (risk-neutral martingale for futures)
+        lm  = float(np.log(S)) - 0.5 * sig**2 * T
+        ls  = sig * float(np.sqrt(T))
+
+        bin_probs = []
+        for i in range(len(bin_edges) - 1):
+            lo, hi = bin_edges[i], bin_edges[i + 1]
+            p_lo = _norm.cdf(np.log(max(lo, 1e-9)), loc=lm, scale=ls) if lo > -np.inf else 0.0
+            p_hi = _norm.cdf(np.log(hi),            loc=lm, scale=ls) if hi <  np.inf else 1.0
+            bin_probs.append(float(np.clip(p_hi - p_lo, 0.0, 1.0)))
+
+        total = sum(bin_probs) or 1.0
+        bin_probs = [round(p / total * 100, 2) for p in bin_probs]
+
+        rows.append({
+            "label":      c["label"],
+            "expiry":     c["expiry_date"],
+            "fwd_price":  S,
+            "t_days":     T,
+            "bin_probs":  bin_probs,
+            "bin_labels": list(bin_labels),
+        })
+    return rows
+
+
 def fetch_eia_distillate(send=print):
     """
     Fetch weekly US distillate fuel oil stocks from EIA API.
@@ -323,7 +518,6 @@ def fetch_eia_distillate(send=print):
     # ── Source 2: EIA v1 series API via urllib ────────────────────────────────
     if not rows_desc:
         send("  [EIA v1] Trying legacy series API ...")
-        # PET.WDISTUS1.W = Weekly US Distillate Stocks, Mbbl
         v1_url = ("https://api.eia.gov/series/"
                   "?api_key={}&series_id=PET.WDISTUS1.W&num=260".format(key))
         send("  [EIA v1] GET {}".format(v1_url.replace(key, "***")))
@@ -334,12 +528,11 @@ def fetch_eia_distillate(send=print):
                 payload = json.loads(resp.read().decode())
             series = payload.get("series", [])
             if series and series[0].get("data"):
-                raw_pts = series[0]["data"]   # [[yyyymmdd, value], ...]
+                raw_pts = series[0]["data"]
                 for pt in raw_pts:
                     try:
-                        dt_str  = str(pt[0])          # "20240101"
+                        dt_str  = str(pt[0])
                         val     = float(pt[1])
-                        # EIA v1 dates: weekly → YYYYMMDD
                         dt      = datetime.datetime.strptime(dt_str, "%Y%m%d")
                         rows_desc.append({"period": dt.strftime("%Y-%m-%d"), "value": val})
                     except Exception:
@@ -398,7 +591,7 @@ def fetch_eia_distillate(send=print):
             with _ur.urlopen(req, timeout=25) as resp:
                 raw = resp.read().decode()
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
-            for line in lines[1:]:          # skip header
+            for line in lines[1:]:
                 parts = line.split(",")
                 if len(parts) == 2 and parts[1] not in (".", ""):
                     try:
@@ -449,9 +642,9 @@ def fetch_eia_distillate(send=print):
     prev   = rows_desc[1]["value"] if len(rows_desc) > 1 else latest
     send("  Distillate stocks: {:,.0f} Mbbl  WoW: {:+.0f}".format(latest, latest - prev))
 
-    history_all_asc = list(reversed(rows_desc))   # oldest first
+    history_all_asc = list(reversed(rows_desc))
 
-    # Seasonal bands — group by ISO week, need ≥2 years per week for a band
+    from collections import defaultdict
     week_buckets = defaultdict(list)
     for row in history_all_asc:
         try:
@@ -472,7 +665,6 @@ def fetch_eia_distillate(send=print):
                 "max":  round(float(np.max(vals)), 0),
             })
 
-    # Current-year overlay
     current_year      = datetime.date.today().year
     current_year_data = []
     for row in history_all_asc:
@@ -493,8 +685,8 @@ def fetch_eia_distillate(send=print):
     return {
         "stocks_mbbl":       latest,
         "wow_change":        latest - prev,
-        "weeks":             rows_desc[:8],        # newest-first, for KPI cards
-        "history":           history_all_asc,      # oldest-first, for charts
+        "weeks":             rows_desc[:8],
+        "history":           history_all_asc,
         "seasonal_bands":    seasonal_bands,
         "current_year_data": current_year_data,
     }
@@ -659,7 +851,6 @@ def run(send=print):
         d+=datetime.timedelta(days=1)
         if d.weekday()<5: fc_dates.append(str(d))
 
-    # Dynamic drift signals
     vix_cur = vix or 20.0
     crack_cur = crack or 15.0
     eia_wow = eia_data.get("wow_change") or 0.0
@@ -670,7 +861,6 @@ def run(send=print):
     seasonal_signal = 0.002 if seasonal_month in (11,12,1,2,3) else (-0.001 if seasonal_month in (5,6,7,8) else 0.0)
     base_dynamic_drift = crack_signal + vix_signal + eia_signal + seasonal_signal
 
-    # VIX-scaled volatility multiplier
     vix_hist = vix_d.get("history", [])
     if len(vix_hist) >= 20:
         vix_rolling_mean = float(np.mean([r["price"] for r in vix_hist[-20:]]))
@@ -731,7 +921,7 @@ def run(send=print):
         {"country":"US","region":"Mountain","state":"CO","lat":39.7,"lon":-104.9,"price":round(ho*1.07,4),"factor":"Altitude distribution cost"},
     ]
 
-    # Brazil diesel/distillate regional prices ($/gal equivalent, Petrobras-referenced)
+    # Brazil diesel/distillate regional prices
     brl_base = ho * 0.98
     brazil_regional_prices = [
         {"country":"BR","region":"São Paulo","state":"SP","lat":-23.5,"lon":-46.6,
@@ -761,6 +951,15 @@ def run(send=print):
     var_es_3m      = compute_var_es(ho, list(r_arr), HORIZON_DAYS["3M"])
     crack_history  = build_crack_spread_history(history, wti_history)
 
+    # Contract schedule, KO barrier table, expiry distribution table
+    send("Building contract schedule and derivative probability tables ...")
+    ho_contracts     = get_ho_contract_schedule(ho, sig_daily)
+    ko_default       = round(ho * 0.85, 4)
+    ko_prob_rows     = compute_ko_probabilities(ho_contracts, ko_default)
+    expiry_dist_rows = compute_expiry_distributions(ho_contracts, sig_daily)
+    send("  Contract schedule: {} contracts  KO default ${:.4f}".format(
+        len(ho_contracts), ko_default))
+
     # Save report
     report_path = os.path.join(run_dir,"ho_report_{}.txt".format(ts))
     with open(report_path,"w",encoding="utf-8") as f:
@@ -771,6 +970,10 @@ def run(send=print):
             for b,p in prob_table[h]: f.write("  {:18s} {:.2%}\n".format(b,p))
         f.write("\n--- EV BY HORIZON ---\n")
         for h,ev in ev_by_horizon.items(): f.write("  {:4s}  EV=${:.4f}\n".format(h,ev))
+        f.write("\n--- KO PROBABILITY TABLE (default KO=${:.4f}) ---\n".format(ko_default))
+        for r in ko_prob_rows:
+            f.write("  {:12s}  exp={}  fwd=${:.4f}  P(touch)={:.1f}%\n".format(
+                r["label"], r["expiry"], r["fwd_price"], r["ko_prob"]))
     send("  Report saved")
     send("=== DONE ===")
 
@@ -786,6 +989,11 @@ def run(send=print):
         "brazil_regional_prices":brazil_regional_prices,
         "ev_by_horizon":ev_by_horizon,"var_es":{"1M":var_es_1m,"3M":var_es_3m},
         "crack_history":crack_history,"run_dir":run_dir,
+        # Contract schedule + derivative probability tables
+        "ho_contracts":     ho_contracts,
+        "ko_prob_rows":     ko_prob_rows,
+        "ko_price_default": ko_default,
+        "expiry_dist_rows": expiry_dist_rows,
         "scenario_signals":{
             "base_dynamic_drift_ann":round(base_dynamic_drift*252*100,2),
             "vix_vol_mult":round(vix_vol_mult,3),
