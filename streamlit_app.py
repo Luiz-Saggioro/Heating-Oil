@@ -8,8 +8,12 @@ Changes v3.0:
   - Add: Admin user management panel (add / deactivate users)
   - Add: Logout button in sidebar
   - Note: users stored in users.json; manage locally via manage_users.py
+Changes v3.1:
+  - Add: Section 05  — KO Probability Table (Table 1)
+         P(each HO futures contract touches a user-specified KO price before expiry)
+  - Add: Section 05B — Probability at Expiration Table (Table 2)
+         Lognormal settlement distribution across 13 monthly contracts
 """
-
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -22,7 +26,6 @@ import os
 import data_fetcher as _df
 import json
 import hashlib
-
 # Load .env if present (local dev)
 try:
     from dotenv import load_dotenv
@@ -30,26 +33,19 @@ try:
     load_dotenv(dotenv_path=_env_path, override=True)
 except ImportError:
     pass
-
 # ── INLINED SECURITY MODULE ───────────────────────────────────────────────────
 # Inlined so no extra file is required on Streamlit Cloud.
-
 import re, time, html, logging
 from collections import defaultdict
-
 logger = logging.getLogger(__name__)
-
 _RATE_LIMIT_WINDOW: int = int(os.environ.get("RATE_LIMIT_WINDOW", 900))
 _RATE_LIMIT_MAX: int    = int(os.environ.get("RATE_LIMIT_MAX_ATTEMPTS", 5))
 _MAX_PAYLOAD: int       = int(os.environ.get("MAX_PAYLOAD_BYTES", 65536))
-
-
 class _RateLimiter:
     def __init__(self, max_attempts=_RATE_LIMIT_MAX, window_secs=_RATE_LIMIT_WINDOW):
         self._max = max_attempts
         self._win = window_secs
         self._log: dict = defaultdict(list)
-
     def check(self, session_id: str):
         now = time.monotonic()
         ws  = now - self._win
@@ -59,36 +55,26 @@ class _RateLimiter:
             return False, 0, int(self._win - (now - h[0])) + 1
         h.append(now)
         return True, self._max - len(h), 0
-
     def remaining(self, session_id: str) -> int:
         now = time.monotonic()
         ws  = now - self._win
         return max(0, self._max - len([t for t in self._log.get(session_id, []) if t > ws]))
-
     def reset(self, session_id: str) -> None:
         self._log.pop(session_id, None)
-
-
 def sanitize_str(value: str, max_len: int = 200) -> str:
     if not isinstance(value, str):
         value = str(value)
     value = html.escape(value.strip())
     value = re.sub(r"[^\w\s\.\-\$\%\/\(\)&,]", "", value)
     return value[:max_len]
-
-
 def validate_enum(value: str, allowed: set) -> str:
     if value not in allowed:
         raise ValueError(f"Invalid value: {value!r}")
     return value
-
-
 def reject_oversized(obj, max_len: int = _MAX_PAYLOAD, label: str = "input") -> None:
     size = len(str(obj))
     if size > max_len:
         raise ValueError(f"{label} too large: {size} > {max_len}")
-
-
 def security_audit_report() -> str:
     issues, passed = [], []
     eia = os.environ.get("EIA_API_KEY", "")
@@ -121,17 +107,12 @@ def security_audit_report() -> str:
     if not issues:
         lines.append("\nAll checks passed.")
     return "\n".join(lines)
-
 limiter = _RateLimiter()
-
-
 # ── INLINED AUTH MODULE ───────────────────────────────────────────────────────
 # Users stored in users.json (PBKDF2 hashed passwords + TOTP secrets).
 # Manage users locally with manage_users.py, then commit to GitHub.
-
 _PBKDF2_ITERS = 260000
 _ADMIN_LOGIN  = "Luiz Saggioro"
-
 def _resolve_users_file() -> str:
     """Try several paths so the file is found both locally and on Streamlit Cloud."""
     candidates = [
@@ -143,8 +124,6 @@ def _resolve_users_file() -> str:
         if os.path.isfile(p):
             return p
     return candidates[0]   # fall back to first; will raise a clear error on open
-
-
 def _load_users() -> list:
     path = _resolve_users_file()
     try:
@@ -156,15 +135,11 @@ def _load_users() -> list:
     except Exception as exc:
         logger.error(f"[AUTH] Failed to load users.json: {exc}")
         return []
-
-
 def _find_user(login: str):
     for u in _load_users():
         if u.get("login", "").strip().lower() == login.strip().lower():
             return u
     return None
-
-
 def _verify_password(user: dict, password: str) -> bool:
     try:
         salt     = bytes.fromhex(user["salt"])
@@ -173,8 +148,6 @@ def _verify_password(user: dict, password: str) -> bool:
         return key.hex() == expected
     except Exception:
         return False
-
-
 def _verify_totp(secret: str, code: str) -> bool:
     """Returns True if code matches.  Fails open only when pyotp is missing."""
     try:
@@ -183,16 +156,12 @@ def _verify_totp(secret: str, code: str) -> bool:
     except ImportError:
         logger.warning("[AUTH] pyotp not installed — skipping TOTP check")
         return True
-
-
 def _totp_uri(secret: str, login: str) -> str:
     try:
         import pyotp
         return pyotp.TOTP(secret).provisioning_uri(name=login, issuer_name="Energy Intelligence")
     except ImportError:
         return ""
-
-
 def _save_users(users: list) -> bool:
     path = _resolve_users_file()
     try:
@@ -204,8 +173,6 @@ def _save_users(users: list) -> bool:
     except Exception as exc:
         logger.error(f"[AUTH] save_users failed: {exc}")
         return False
-
-
 def _mark_totp_enabled(login: str) -> None:
     users = _load_users()
     for u in users:
@@ -213,10 +180,7 @@ def _mark_totp_enabled(login: str) -> None:
             u["totp_enabled"] = True
             break
     _save_users(users)
-
-
 # ── Auth session helpers ──────────────────────────────────────────────────────
-
 def _auth_init():
     defaults = dict(
         auth_logged_in    = False,
@@ -229,16 +193,11 @@ def _auth_init():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-
 def _auth_logout():
     for k in ["auth_logged_in","auth_user","auth_is_admin",
               "auth_step","auth_pending_user","auth_error"]:
         st.session_state.pop(k, None)
-
-
 # ── Auth CSS ──────────────────────────────────────────────────────────────────
-
 _AUTH_CSS = """
 <style>
 .auth-wrap{max-width:400px;margin:80px auto;}
@@ -257,30 +216,23 @@ _AUTH_CSS = """
 }
 </style>
 """
-
-
 # ── Login form (step 1) ───────────────────────────────────────────────────────
-
 def render_login_form():
     st.markdown(_AUTH_CSS, unsafe_allow_html=True)
     st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
     st.markdown("<div class='auth-title'>Energy Intelligence</div>", unsafe_allow_html=True)
     st.markdown("<div class='auth-sub'>Secure access — sign in to continue</div>",
                 unsafe_allow_html=True)
-
     # Warn immediately if users.json is missing — avoids silent failure
     if not os.path.isfile(_resolve_users_file()):
         st.warning("⚠️ users.json not found in the repo. Add the file and redeploy.")
-
     with st.form("login_form", clear_on_submit=False):
         login    = st.text_input("Login name", placeholder="e.g. Luiz Saggioro")
         password = st.text_input("Password", type="password")
         submit   = st.form_submit_button("Sign in", use_container_width=True)
-
     if st.session_state.auth_error:
         st.error(st.session_state.auth_error)
         st.session_state.auth_error = ""
-
     if submit:
         login = sanitize_str(login.strip(), max_len=100)
         user  = _find_user(login)
@@ -291,12 +243,8 @@ def render_login_form():
             st.session_state.auth_pending_user = user
             st.session_state.auth_step = "totp_setup" if not user.get("totp_enabled") else "totp"
             st.rerun()
-
     st.markdown("</div></div>", unsafe_allow_html=True)
-
-
 # ── TOTP verification (step 2, returning users) ───────────────────────────────
-
 def render_totp_form():
     user = st.session_state.auth_pending_user
     st.markdown(_AUTH_CSS, unsafe_allow_html=True)
@@ -304,20 +252,16 @@ def render_totp_form():
     st.markdown("<div class='auth-title'>Two-Factor Auth</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='auth-sub'>Enter the 6-digit code for {user['login']}</div>",
                 unsafe_allow_html=True)
-
     with st.form("totp_form", clear_on_submit=True):
         code   = st.text_input("Authenticator code", max_chars=6, placeholder="000000")
         submit = st.form_submit_button("Verify", use_container_width=True)
-
     if st.session_state.auth_error:
         st.error(st.session_state.auth_error)
         st.session_state.auth_error = ""
-
     if st.button("Back to login", key="totp_back"):
         st.session_state.auth_step = "login"
         st.session_state.auth_pending_user = None
         st.rerun()
-
     if submit:
         if _verify_totp(user["totp_secret"], code):
             st.session_state.auth_logged_in    = True
@@ -329,23 +273,17 @@ def render_totp_form():
         else:
             st.session_state.auth_error = "Incorrect code — try again."
             st.rerun()
-
     st.markdown("</div></div>", unsafe_allow_html=True)
-
-
 # ── TOTP first-time setup (step 2, new users) ────────────────────────────────
-
 def render_totp_setup():
     user   = st.session_state.auth_pending_user
     secret = user["totp_secret"]
     uri    = _totp_uri(secret, user["login"])
-
     st.markdown(_AUTH_CSS, unsafe_allow_html=True)
     st.markdown("<div class='auth-wrap'><div class='auth-card'>", unsafe_allow_html=True)
     st.markdown("<div class='auth-title'>Set up Two-Factor Auth</div>", unsafe_allow_html=True)
     st.markdown("<div class='auth-sub'>One-time setup — scan QR or enter key manually</div>",
                 unsafe_allow_html=True)
-
     qr_ok = False
     if uri:
         try:
@@ -357,29 +295,23 @@ def render_totp_setup():
             qr_ok = True
         except ImportError:
             pass
-
     if not qr_ok:
         st.markdown("**Add manually in your authenticator app:**")
         if uri:
             st.code(uri, language=None)
-
     st.markdown("**Secret key (manual entry):**")
     st.code(secret, language=None)
     st.caption("Time-based (TOTP) · issuer: Energy Intelligence")
-
     with st.form("totp_setup_form", clear_on_submit=True):
         code   = st.text_input("Confirm with a 6-digit code", max_chars=6, placeholder="000000")
         submit = st.form_submit_button("Confirm & sign in", use_container_width=True)
-
     if st.session_state.auth_error:
         st.error(st.session_state.auth_error)
         st.session_state.auth_error = ""
-
     if st.button("Back to login", key="setup_back"):
         st.session_state.auth_step = "login"
         st.session_state.auth_pending_user = None
         st.rerun()
-
     if submit:
         if _verify_totp(secret, code):
             _mark_totp_enabled(user["login"])
@@ -392,12 +324,8 @@ def render_totp_setup():
         else:
             st.session_state.auth_error = "Incorrect code — make sure you scanned the right key."
             st.rerun()
-
     st.markdown("</div></div>", unsafe_allow_html=True)
-
-
 # ── Auth gate dispatcher ──────────────────────────────────────────────────────
-
 def render_auth_gate() -> bool:
     """Call before any dashboard content. Returns True if user is authenticated."""
     _auth_init()
@@ -411,26 +339,20 @@ def render_auth_gate() -> bool:
     else:
         render_login_form()
     return False
-
-
 # ── Admin panel (sidebar) ─────────────────────────────────────────────────────
-
 def render_admin_panel():
     """Sidebar expander for admin user management."""
     import secrets as _sec
     import datetime as _dt
-
     st.sidebar.divider()
     with st.sidebar.expander("User Management (Admin)", expanded=False):
         users = _load_users()
-
         st.markdown("**Users**")
         for u in users:
             tag = ("Active" if u.get("is_active") else "**Inactive**") + \
                   (" · 2FA on" if u.get("totp_enabled") else " · 2FA pending") + \
                   (" · Admin" if u.get("is_admin") else "")
             st.markdown(f"`{u['login']}` — {tag}")
-
         st.markdown("---")
         st.markdown("**Toggle active status**")
         non_admin = [u["login"] for u in users if u["login"] != _ADMIN_LOGIN]
@@ -451,7 +373,6 @@ def render_admin_panel():
                 st.rerun()
         else:
             st.caption("No other users to manage.")
-
         st.markdown("---")
         st.markdown("**Add new user**")
         nl = st.text_input("Login name", key="adm_nl")
@@ -478,8 +399,6 @@ def render_admin_panel():
                 msg = f"'{nl}' created." + ("" if ok else " Commit users.json via manage_users.py to persist.")
                 st.success(msg)
                 st.rerun()
-
-
 # ── PAGE CONFIG ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Energy Intelligence Dashboard",
@@ -487,7 +406,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
 # ── THEME / CSS ───────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -519,7 +437,6 @@ hr{border-color:#1a2540;}
 .js-plotly-plot{border-radius:8px;}
 </style>
 """, unsafe_allow_html=True)
-
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
 _tmpl = go.layout.Template(layout=go.Layout(
     paper_bgcolor="#07090f", plot_bgcolor="#07090f",
@@ -536,7 +453,6 @@ PT = "plotly_dark+energy_dark"
 SCEN_COLORS = ["#00d4ff","#ffd060","#ff6b35","#ff3d5a","#9d7aff"]
 HORIZONS    = ["1M","3M","6M","9M","12M"]
 _PCFG = {"displayModeBar":False,"displaylogo":False}
-
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
 def init_state():
     defs = dict(result=None,agent=None,sel_horizon="1M",sel_bin=None,
@@ -545,7 +461,6 @@ def init_state():
         if k not in st.session_state: st.session_state[k]=v
     _auth_init()
 init_state()
-
 # ── AGENT RUNNERS (cached, TTL=300s) ─────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner=False)
 def run_oil_agent():
@@ -553,14 +468,12 @@ def run_oil_agent():
     msgs=[]
     result=oil.run(send=msgs.append)
     return result, msgs
-
 @st.cache_data(ttl=300, show_spinner=False)
 def run_ho_agent():
     import ho_agent as ho
     msgs=[]
     result=ho.run(send=msgs.append)
     return result, msgs
-
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def section(num, title, hint=""):
     st.markdown(f"""
@@ -592,7 +505,6 @@ def render_snapshot(result, agent):
     f  = result.get("forecast",{})
     ci = result.get("ci_bands",{})
     ci1m = ci.get("1M",{})
-
     if ho:
         cols = st.columns(5)
         metrics = [
@@ -613,7 +525,6 @@ def render_snapshot(result, agent):
         ]
     for col,(label,val,sub) in zip(cols,metrics):
         col.metric(label,val,sub)
-
     ci_width = round((ci1m.get("ci95",[0,0])[1]-ci1m.get("ci95",[0,0])[0]),4 if ho else 2)
     regime_label = result.get("regime","—") if ho else f.get("direction","—")
     st.caption(f"1M 95% CI range: **${ci_width}** · Regime: **{regime_label}**")
@@ -626,7 +537,6 @@ def render_price_history(result, agent):
     Intraday periods call data_fetcher.fetch_intraday_history() live each render.
     Longer periods (1M+) use the daily history cached in result.
     Dynamic y-axis, period-aware MA, synthetic data warning.
-
     v2.1 fixes:
       - "1 Day"  → 2d lookback / 13 bars  (last trading session only)
       - "1 Week" → 7d lookback / 168 bars  (distinct from 1 Day)
@@ -639,20 +549,16 @@ def render_price_history(result, agent):
     ticker_name = "HO" if ho else "WTI"
     color       = "#f5a623" if ho else "#00d4ff"
     fill_rgba   = "245,166,35" if ho else "0,212,255"
-
     # Period options — "1 Hour" removed (unreliable intraday source)
     PERIOD_OPTS  = ["1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
     INTRADAY_SET = {"1 Day", "1 Week"}
-
     period = st.radio("Period", PERIOD_OPTS, horizontal=True, index=1, key="period_radio")
     period_s = sanitize_str(period)
     try:
         validate_enum(period_s, set(PERIOD_OPTS))
     except ValueError:
         period_s = "1 Week"
-
     is_synthetic = False
-
     # ── Intraday path (1D / 1W) ───────────────────────────────────────────────
     if period_s in INTRADAY_SET:
         intraday_cfg = {
@@ -664,17 +570,14 @@ def render_price_history(result, agent):
         rows, is_synthetic = _df.fetch_intraday_history(
             ticker_name, interval=interval, lookback_days=lookback
         )
-
         labels = [r["datetime"] for r in rows]
         prices = [float(r["price"]) for r in rows]
-
         xaxis_cfg = dict(
             type="date",
             tickformat=tick_fmt,
             rangeslider=dict(visible=True, bgcolor="#07090f"),
         )
         ma_n = min(6, max(1, len(prices) // 4))
-
     # ── Daily path (1M and longer) ────────────────────────────────────────────
     else:
         cutoff_map  = {"1 Month": 30, "3 Months": 90, "6 Months": 180,
@@ -684,10 +587,8 @@ def render_price_history(result, agent):
         filtered    = [r for r in daily_hist if str(r["date"]) >= str(cutoff_date)]
         if len(filtered) < 2:
             filtered = daily_hist[-10:]
-
         labels = [r["date"] for r in filtered]
         prices = [float(r["price"]) for r in filtered]
-
         is_synthetic = (result.get("is_synthetic_history", False)
                         or any(r.get("synthetic") for r in filtered))
         xaxis_cfg = dict(
@@ -695,7 +596,6 @@ def render_price_history(result, agent):
             rangeslider=dict(visible=True, bgcolor="#07090f"),
         )
         ma_n = min(20, max(1, len(prices) // 2)) if ho else min(7, max(1, len(prices) // 2))
-
     # ── Synthetic warning ─────────────────────────────────────────────────────
     if is_synthetic:
         st.error(
@@ -703,15 +603,12 @@ def render_price_history(result, agent):
             "failed to respond.** The chart below does NOT reflect real market prices. "
             "Check the Run Log at the bottom of the page for details on which sources failed."
         )
-
     if len(prices) < 2:
         st.info("Not enough history data for the selected period.")
         return
-
     # ── Moving average ────────────────────────────────────────────────────────
     ma = [np.mean(prices[max(0, i - ma_n + 1):i + 1]) if i >= ma_n - 1 else None
           for i in range(len(prices))]
-
     # ── Dynamic y-axis — no hard-coded range ─────────────────────────────────
     p_min, p_max = min(prices), max(prices)
     if ho:
@@ -720,7 +617,6 @@ def render_price_history(result, agent):
     else:
         pad    = max(1.0, (p_max - p_min) * 0.10)
         yrange = [round(p_min - pad, 2), round(p_max + pad, 2)]
-
     # ── Chart — full-width container, height 520 ────────────────────────────
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -732,7 +628,6 @@ def render_price_history(result, agent):
         x=labels, y=ma, name=f"{ma_n}pt MA",
         line=dict(color="#9d7aff", width=1.5, dash="dot"),
         hovertemplate="MA: $%{y:.4f}<extra></extra>" if ho else "MA: $%{y:.2f}<extra></extra>"))
-
     fig.update_layout(
         template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=520,
         title=dict(
@@ -753,7 +648,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
     c1,c2 = st.columns(2)
     rows = result.get("prob_table",{}).get(sel_h,[])
     if not rows: return
-
     bins  = [r[0] for r in rows]
     probs = [round(r[1]*100,2) for r in rows]
     maxP  = max(probs)
@@ -763,7 +657,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
         elif sel_bin:              colors.append("rgba(0,212,255,.2)")
         elif p==maxP:              colors.append("#f5a623")
         else:                      colors.append("#00d4ff" if ho else "#f5a623")
-
     with c1:
         fig=go.Figure(go.Bar(y=bins,x=probs,orientation="h",marker_color=colors,
             text=[f"{p:.1f}%" for p in probs],textposition="outside",
@@ -773,7 +666,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
             xaxis=dict(title="Probability (%)",ticksuffix="%"),
             yaxis=dict(autorange="reversed"),bargap=0.15,showlegend=False)
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("prob_bar"))
-
     with c2:
         cum=0; cdf=[]
         for _,p in rows: cum+=p; cdf.append(round(cum*100,2))
@@ -786,17 +678,14 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
             yaxis=dict(title="Cumulative Probability (%)",ticksuffix="%",range=[0,100]),
             xaxis=dict(title="Price Range"))
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("cdf"))
-
     ev = result.get("ev_by_horizon",{})
     if ev:
         st.markdown("**Expected Value (EV) by Horizon** — probability-weighted average price")
         ev_cols = st.columns(len(HORIZONS))
         for col,h in zip(ev_cols,HORIZONS):
             col.metric(h,f"${ev.get(h,0):.4f}" if ho else f"${ev.get(h,0):.2f}")
-
     st.markdown("**Probability Table** — all horizons")
     _render_prob_table(result, agent, sel_h, sel_bin)
-
     if ho:
         ls = result.get("lognorm_shape",{})
         if ls:
@@ -827,7 +716,6 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
                 st.metric("Skewness",f"{ls['skewness']:.3f}")
                 st.metric("Kurtosis",f"{ls['kurtosis']:.3f}")
                 st.markdown("</div>",unsafe_allow_html=True)
-
 
 def _render_prob_table(result, agent, sel_h, sel_bin):
     ho   = agent=="ho"
@@ -862,27 +750,22 @@ def render_volatility(result):
     if not vh:
         st.info("Insufficient history for volatility (need > 11 trading days)")
         return
-
     df_full = pd.DataFrame(vh)
     df_full["date"] = pd.to_datetime(df_full["date"])
-
     period_opts = ["1M","3M","6M","1Y"]
     period_days = {"1M":30,"3M":90,"6M":180,"1Y":365}
     period = st.radio("Volatility period",period_opts,index=1,
                       horizontal=True,key="vol_period_radio")
     try:    validate_enum(sanitize_str(period),set(period_opts))
     except ValueError: period="3M"
-
     cutoff = pd.Timestamp.today() - pd.Timedelta(days=period_days[period])
     df     = df_full[df_full["date"]>=cutoff].copy()
     if df.empty: df = df_full.tail(10).copy()
-
     v_max   = float(df["vol"].max())
     v_min   = float(df["vol"].min())
     y_upper = round(v_max * 1.05, 2)
     y_lower = round(v_min * 0.85, 2)
     avg     = float(df["vol"].mean())
-
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines+markers",
         line=dict(color="#f5a623" if result.get("agent")=="ho" else "#00d4ff",width=2),
@@ -899,6 +782,293 @@ def render_volatility(result):
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
 
 
+# ── ⑤ KO PROBABILITY TABLE ───────────────────────────────────────────────────
+def render_ko_table(result, agent):
+    """
+    Table 1: Probability of Each HO Contract Hitting the KO Price.
+    Rows: 13 monthly contracts (front month + next 12).
+    Columns: Contract, Expiration, Futures Price, KO Price, P(Touch KO).
+    Model: GBM reflection principle (zero-drift, risk-neutral for futures).
+    """
+    if agent != "ho":
+        return
+    section("05", "KO PROBABILITY BY CONTRACT",
+            "P(price touches KO barrier at any point before expiry)")
+
+    contracts = result.get("ho_contracts", [])
+    if not contracts:
+        st.info("Forward curve data unavailable — re-run the HO engine.")
+        return
+
+    import ho_agent as _ho_mod
+
+    ho_spot   = result.get("market_data", {}).get("HO", result.get("ho_price", 3.5))
+    r_arr     = np.array(result.get("returns", []))
+    sig_daily = float(np.std(r_arr, ddof=1)) if len(r_arr) > 5 else 0.015
+    sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
+    ann_vol   = sig_daily * np.sqrt(252) * 100
+
+    default_ko = float(result.get("ko_price_default", round(ho_spot * 0.85, 4)))
+
+    ko_price = st.number_input(
+        "KO Price ($/gal)",
+        min_value=0.01, max_value=20.0,
+        value=default_ko, step=0.01, format="%.4f",
+        key="ko_price_input",
+        help="Knock-Out barrier price — compute the probability of touching this level "
+             "at any time before each contract's expiration date.",
+    )
+
+    # Recompute on the fly with the user-specified KO price
+    rows = _ho_mod.compute_ko_probabilities(contracts, ko_price)
+
+    direction = "BELOW" if ko_price < ho_spot else "ABOVE"
+    dist_pct  = abs(ko_price - ho_spot) / ho_spot * 100
+    st.caption(
+        f"KO **${ko_price:.4f}** — **{direction}** spot **${ho_spot:.4f}** "
+        f"({dist_pct:.1f}% away) · Ann. vol: **{ann_vol:.1f}%** · "
+        f"Model: GBM reflection principle, zero-drift (risk-neutral futures)"
+    )
+
+    # ── Styled HTML table ─────────────────────────────────────────────────────
+    th = (
+        "padding:7px 14px;background:#0d1220;color:#4a6080;"
+        "font-family:'JetBrains Mono',monospace;font-size:9px;"
+        "text-transform:uppercase;letter-spacing:.8px;"
+        "border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
+    )
+    td = (
+        "padding:6px 14px;font-family:'JetBrains Mono',monospace;"
+        "font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
+    )
+
+    headers = ["Contract", "Expiry", "Futures Price", "KO Price", "P(Touch KO)"]
+    head_html = "".join(f'<th style="{th}">{h}</th>' for h in headers)
+
+    body_html = ""
+    for r in rows:
+        prob = r["ko_prob"]
+        # Color scale: green (low risk) → orange → red (high risk)
+        if prob >= 75:
+            pc = "#ff3d5a"
+        elif prob >= 50:
+            pc = "#ffd060"
+        elif prob >= 25:
+            pc = "#f5a623"
+        else:
+            pc = "#1df5a0"
+        body_html += (
+            f'<tr>'
+            f'<td style="{td}color:#c8d8ec;font-weight:600">{r["label"]}</td>'
+            f'<td style="{td}color:#4a6080">{r["expiry"]}</td>'
+            f'<td style="{td}color:#c8d8ec">${r["fwd_price"]:.4f}</td>'
+            f'<td style="{td}color:#9d7aff">${r["ko_price"]:.4f}</td>'
+            f'<td style="{td}color:{pc};font-weight:700">{prob:.1f}%</td>'
+            f'</tr>'
+        )
+
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Bar chart — P(KO) by contract ─────────────────────────────────────────
+    labels = [r["label"] for r in rows]
+    probs  = [r["ko_prob"] for r in rows]
+    colors = [
+        "#ff3d5a" if p >= 75 else
+        "#ffd060" if p >= 50 else
+        "#f5a623" if p >= 25 else
+        "#1df5a0"
+        for p in probs
+    ]
+    y_max = min(110, max(probs) * 1.25) if probs else 110
+
+    fig = go.Figure(go.Bar(
+        x=labels, y=probs,
+        marker_color=colors,
+        text=[f"{p:.1f}%" for p in probs],
+        textposition="outside",
+        hovertemplate="%{x}: %{y:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=240,
+        title=dict(
+            text=f"P(Touch KO ${ko_price:.4f}) by Contract",
+            font=dict(size=10, color="#c8d8ec")),
+        yaxis=dict(title="Probability (%)", ticksuffix="%", range=[0, y_max]),
+        xaxis=dict(title="Contract"),
+        showlegend=False, bargap=0.2, margin=dict(l=50, r=20, t=40, b=40),
+    )
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_bar"))
+
+
+# ── ⑤B PROBABILITY AT EXPIRATION TABLE ───────────────────────────────────────
+def render_expiry_distribution_table(result, agent):
+    """
+    Table 2: Probability at Expiration — 12-Month Forward.
+    Rows: 13 monthly contracts.
+    Columns: Contract, Expiry, Fwd Price + probability in each price range.
+    Model: lognormal settlement distribution, zero-drift (risk-neutral).
+    Modes: Predefined Ranges (default bins) or Custom Thresholds (user-defined).
+    """
+    if agent != "ho":
+        return
+    section("05B", "PROBABILITY AT EXPIRATION (12-MONTH FORWARD)",
+            "Lognormal settlement distribution by contract — predefined or custom ranges")
+
+    contracts = result.get("ho_contracts", [])
+    if not contracts:
+        st.info("Forward curve data unavailable — re-run the HO engine.")
+        return
+
+    import ho_agent as _ho_mod
+
+    r_arr     = np.array(result.get("returns", []))
+    sig_daily = float(np.std(r_arr, ddof=1)) if len(r_arr) > 5 else 0.015
+    sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
+    ho_spot   = result.get("market_data", {}).get("HO", result.get("ho_price", 3.5))
+
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    mode = st.radio(
+        "Display mode",
+        ["Predefined Ranges", "Custom Thresholds"],
+        horizontal=True,
+        key="expiry_dist_mode",
+    )
+
+    if mode == "Custom Thresholds":
+        st.caption(
+            "Enter up to 3 price thresholds to split the distribution. "
+            "The table will show P(below T1), P(T1–T2), P(T2–T3), P(above T3)."
+        )
+        cc1, cc2, cc3 = st.columns(3)
+        t1 = cc1.number_input("Threshold 1 ($/gal)", value=round(ho_spot * 0.80, 2),
+                               min_value=0.01, max_value=20.0, step=0.05, format="%.2f",
+                               key="ed_thresh1")
+        t2 = cc2.number_input("Threshold 2 ($/gal)", value=round(ho_spot * 0.90, 2),
+                               min_value=0.01, max_value=20.0, step=0.05, format="%.2f",
+                               key="ed_thresh2")
+        t3 = cc3.number_input("Threshold 3 ($/gal)", value=round(ho_spot, 2),
+                               min_value=0.01, max_value=20.0, step=0.05, format="%.2f",
+                               key="ed_thresh3")
+        thresholds = sorted(set([t1, t2, t3]))   # deduplicate & sort
+        bin_labels = (
+            [f"<${thresholds[0]:.2f}"]
+            + [f"${thresholds[i]:.2f}-${thresholds[i+1]:.2f}"
+               for i in range(len(thresholds) - 1)]
+            + [f">${thresholds[-1]:.2f}"]
+        )
+        bin_edges = [-np.inf] + list(thresholds) + [np.inf]
+    else:
+        bin_edges  = _ho_mod.DISPLAY_BIN_EDGES
+        bin_labels = _ho_mod.DISPLAY_BIN_LABELS
+
+    # Recompute distributions with the selected bins
+    fresh_rows = _ho_mod.compute_expiry_distributions(
+        contracts, sig_daily, bin_edges, bin_labels
+    )
+
+    # ── Styled heatmap HTML table ─────────────────────────────────────────────
+    th = (
+        "padding:7px 10px;background:#0d1220;color:#4a6080;"
+        "font-family:'JetBrains Mono',monospace;font-size:9px;"
+        "text-transform:uppercase;letter-spacing:.8px;"
+        "border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
+    )
+    td = (
+        "padding:5px 10px;font-family:'JetBrains Mono',monospace;"
+        "font-size:10px;border-bottom:1px solid #0f1825;text-align:center;"
+    )
+
+    fixed_hdrs = ["Contract", "Expiry", "Fwd Price"]
+    head_html  = (
+        "".join(f'<th style="{th}">{h}</th>' for h in fixed_hdrs)
+        + "".join(f'<th style="{th}">{lbl}</th>' for lbl in bin_labels)
+    )
+
+    body_html = ""
+    for r in fresh_rows:
+        bp     = r["bin_probs"]
+        max_bp = max(bp) if bp else 1.0
+        cells  = (
+            f'<td style="{td}color:#c8d8ec;font-weight:600">{r["label"]}</td>'
+            f'<td style="{td}color:#4a6080">{r["expiry"]}</td>'
+            f'<td style="{td}color:#c8d8ec">${r["fwd_price"]:.4f}</td>'
+        )
+        for p in bp:
+            intensity = p / max_bp if max_bp > 0 else 0
+            # Heat color: highest bin in each row = bright orange, moderate = blue, low = dim
+            if intensity > 0.65:
+                cell_bg = "rgba(245,166,35,0.22)"
+                tc = "#ffd060"
+                fw = "700"
+            elif intensity > 0.35:
+                cell_bg = "rgba(0,212,255,0.10)"
+                tc = "#00d4ff"
+                fw = "400"
+            else:
+                cell_bg = "transparent"
+                tc = "#3a5070"
+                fw = "400"
+            cells += (
+                f'<td style="{td}background:{cell_bg};color:{tc};font-weight:{fw}">'
+                f'{p:.1f}%</td>'
+            )
+        body_html += f"<tr>{cells}</tr>"
+
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Orange = modal price range per contract · Blue = moderate probability · "
+        "Gray = low probability · "
+        "Model: lognormal, risk-neutral zero-drift (futures martingale)"
+    )
+
+    # ── Heatmap chart — contract × bin probability matrix ─────────────────────
+    if fresh_rows and bin_labels:
+        z_matrix  = [r["bin_probs"] for r in fresh_rows]
+        x_labels  = bin_labels
+        y_labels  = [r["label"] for r in fresh_rows]
+
+        fig = go.Figure(go.Heatmap(
+            z=z_matrix,
+            x=x_labels,
+            y=y_labels,
+            colorscale=[
+                [0.0,  "#07090f"],
+                [0.35, "#0d2040"],
+                [0.65, "#1a4080"],
+                [0.85, "#f5a623"],
+                [1.0,  "#ffd060"],
+            ],
+            hovertemplate="Contract: %{y}<br>Range: %{x}<br>Probability: %{z:.1f}%<extra></extra>",
+            showscale=True,
+            colorbar=dict(
+                title=dict(text="Prob (%)", font=dict(color="#4a6080", size=9)),
+                tickfont=dict(color="#4a6080", size=9),
+                bgcolor="#07090f",
+                bordercolor="#1a2540",
+            ),
+        ))
+        fig.update_layout(
+            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=360,
+            title=dict(
+                text="Settlement Probability Heatmap — Contract × Price Range",
+                font=dict(size=10, color="#c8d8ec")),
+            xaxis=dict(title="Price Range", tickfont=dict(size=9)),
+            yaxis=dict(title="Contract", autorange="reversed", tickfont=dict(size=9)),
+            margin=dict(l=100, r=80, t=40, b=80),
+        )
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("expiry_heatmap"))
+
+
 # ── ⑥ SCENARIO ────────────────────────────────────────────────────────────────
 def render_scenario(result, agent, sel_scen):
     section("06","SCENARIO SIMULATION","Dynamic signals: crack spread · VIX · EIA · seasonal")
@@ -908,7 +1078,6 @@ def render_scenario(result, agent, sel_scen):
     f    = result.get("forecast",{})
     spot = md.get("HO",result.get("ho_price",3.5)) if ho else f.get("current_wti",result.get("wti",80))
     sigs = result.get("scenario_signals",{})
-
     if ho and sigs:
         sc1,sc2,sc3,sc4,sc5 = st.columns(5)
         base_drift = sigs.get("base_dynamic_drift_ann",0)
@@ -922,7 +1091,6 @@ def render_scenario(result, agent, sel_scen):
             help="Heating season (Nov–Mar) = bullish, summer = bearish")
         sc5.metric("EIA Signal", f"{sigs.get('eia_signal_ann',0):+.2f}%",
             help="Weekly inventory draw (+) or build (−) contribution")
-
         sig_names  = ["Crack Spread","VIX","EIA Inventory","Seasonal"]
         sig_values = [sigs.get("crack_signal_ann",0),sigs.get("vix_signal_ann",0),
                       sigs.get("eia_signal_ann",0),sigs.get("seasonal_signal_ann",0)]
@@ -936,7 +1104,6 @@ def render_scenario(result, agent, sel_scen):
             yaxis=dict(title="Drift (%)", ticksuffix="%"),
             showlegend=False, bargap=0.3, margin=dict(l=40,r=20,t=36,b=30))
         st.plotly_chart(fig_sig, use_container_width=True, config=_PCFG, key=_pc("sig_decomp"))
-
     fig=go.Figure()
     for i,(sname,path) in enumerate(sp.items()):
         opa = 1.0 if not sel_scen or sel_scen==sname else 0.2
@@ -952,7 +1119,6 @@ def render_scenario(result, agent, sel_scen):
         yaxis=dict(tickformat=fmt),hovermode="x unified",
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen"))
-
     if ho and sp:
         st.markdown("**Scenario Parameters** — effective drift and volatility after signal adjustments")
         rows_html = ""
@@ -980,7 +1146,6 @@ def render_scenario(result, agent, sel_scen):
             f'<th style="{th}text-align:left">Driver Logic</th>'
             f'</tr></thead><tbody>{rows_html}</tbody></table></div>',
             unsafe_allow_html=True)
-
     c1,c2 = st.columns(2)
     with c1:
         names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
@@ -1081,11 +1246,9 @@ def render_regional(result, agent, sel_reg):
             fig_br = _make_map(br_rp, scope="south america",
                                title="Brazil Regional Heating Oil Prices ($/gal)", proj="mercator")
             st.plotly_chart(fig_br, use_container_width=True, config=_PCFG, key=_pc("map_br"))
-
             us_rp_all = [r for r in rp if r.get("country","US")=="US"]
             us_prices_all = [r["price"] for r in us_rp_all] if us_rp_all else [0]
             br_prices_all = [r["price"] for r in br_rp]
-
             fig_cmp = go.Figure()
             all_regions = (
                 [dict(r, label=r["region"]) for r in us_rp_all] +
@@ -1118,7 +1281,6 @@ def render_regional(result, agent, sel_reg):
                 showlegend=False, bargap=0.15,
                 margin=dict(l=40, r=10, t=36, b=60))
             st.plotly_chart(fig_cmp, use_container_width=True, config=_PCFG, key=_pc("region_cmp"))
-
             us_avg_v  = float(np.mean(us_prices_all))
             br_avg_v  = float(np.mean(br_prices_all))
             delta_pct = (br_avg_v - us_avg_v) / us_avg_v * 100
@@ -1133,7 +1295,6 @@ def render_eia_deep_dive(result):
     section("08","EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
     eia  = result.get("eia_data",{})
     hist = eia.get("history",[])
-
     c1,c2,c3 = st.columns(3)
     s   = eia.get("stocks_mbbl")
     wow = eia.get("wow_change")
@@ -1146,7 +1307,6 @@ def render_eia_deep_dive(result):
         c3.metric("4-Week Avg", f"{avg4:,.0f} Mbbl")
     else:
         c3.metric("4-Week Avg","N/A")
-
     if not hist:
         key_missing = eia.get("key_missing", False)
         if key_missing:
@@ -1165,11 +1325,9 @@ def render_eia_deep_dive(result):
                 "The rest of the dashboard is unaffected."
             )
         return
-
     df_full = pd.DataFrame(hist)
     df_full["period"] = pd.to_datetime(df_full["period"])
     df_full = df_full.sort_values("period")
-
     st.markdown("**Inventory Levels & Week-over-Week Momentum** — last 16 weeks")
     c_a, c_b = st.columns([3, 2])
     with c_a:
@@ -1187,7 +1345,6 @@ def render_eia_deep_dive(result):
             title=dict(text="52-Week Inventory History (Mbbl)", font=dict(size=10, color="#c8d8ec")),
             xaxis=dict(title=""), yaxis=dict(title="Mbbl"), showlegend=False)
         st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia"))
-
     with c_b:
         df_wow = df_full.tail(17)
         if len(df_wow) >= 2:
@@ -1204,7 +1361,6 @@ def render_eia_deep_dive(result):
                 title=dict(text="WoW Change — Last 16 Weeks", font=dict(size=10, color="#c8d8ec")),
                 xaxis=dict(tickangle=-45), yaxis=dict(title="Mbbl"), showlegend=False, bargap=0.15)
             st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia_wow"))
-
     sb = eia.get("seasonal_bands", [])
     cy = eia.get("current_year_data", [])
     if sb:
@@ -1240,14 +1396,11 @@ def render_crack_spread(result, agent):
     ch = result.get("crack_history",[])
     md = result.get("market_data",{})
     current_crack = md.get("crack_spread")
-
     if not ch:
         st.info("Crack spread history requires both HO and WTI price history.")
         return
-
     df_crack = pd.DataFrame(ch)
     df_crack["date"] = pd.to_datetime(df_crack["date"])
-
     c1, c2, c3 = st.columns(3)
     crack_vals = df_crack["crack"].dropna().tolist()
     if crack_vals:
@@ -1256,7 +1409,6 @@ def render_crack_spread(result, agent):
         pct_rank = round(sum(v <= (current_crack or 0) for v in crack_vals) / len(crack_vals) * 100, 1)
         c3.metric("Percentile Rank", f"{pct_rank:.0f}th",
                   help="Where today's crack sits vs the past year")
-
     ca, cb = st.columns(2)
     with ca:
         fig1 = go.Figure()
@@ -1276,7 +1428,6 @@ def render_crack_spread(result, agent):
             title=dict(text="Crack Spread History — HO 3:2:1 ($/bbl)", font=dict(size=10, color="#c8d8ec")),
             xaxis=dict(title=""), yaxis=dict(title="$/bbl"), showlegend=False)
         st.plotly_chart(fig1, use_container_width=True, config=_PCFG, key=_pc("crack_ts"))
-
     with cb:
         if crack_vals:
             fig2 = go.Figure(go.Histogram(
@@ -1292,7 +1443,6 @@ def render_crack_spread(result, agent):
                 title=dict(text="Crack Spread Distribution", font=dict(size=10, color="#c8d8ec")),
                 xaxis=dict(title="$/bbl"), yaxis=dict(title="Observations"), showlegend=False)
             st.plotly_chart(fig2, use_container_width=True, config=_PCFG, key=_pc("crack_dist"))
-
     if ho and len(ch) >= 10:
         ho_prices  = [r.get("ho") for r in ch if r.get("ho") and r.get("crack")]
         crack_x    = [r.get("crack") for r in ch if r.get("ho") and r.get("crack")]
@@ -1339,7 +1489,6 @@ def render_seasonal_pattern(result, agent):
     if len(history) < 90:
         st.info("Seasonal pattern needs at least 90 days of history.")
         return
-
     from collections import defaultdict
     import calendar
     month_buckets = defaultdict(list)
@@ -1349,24 +1498,20 @@ def render_seasonal_pattern(result, agent):
             month_buckets[dt.month].append(float(row["price"]))
         except Exception:
             pass
-
     months     = list(range(1, 13))
     month_abbr = [calendar.month_abbr[m] for m in months]
     avgs       = [round(float(np.mean(month_buckets[m])), 4) if month_buckets[m] else None for m in months]
     current_m  = datetime.date.today().month
     cur_ho     = result.get("market_data", {}).get("HO", result.get("ho_price", 0))
-
     overall_avg   = float(np.mean([p for v in month_buckets.values() for p in v])) if month_buckets else cur_ho
     current_m_avg = avgs[current_m - 1] or cur_ho
     delta_vs_seasonal = round((cur_ho - current_m_avg) / current_m_avg * 100, 2) if current_m_avg else 0
-
     d1, d2 = st.columns(2)
     d1.metric("Current Month Avg (hist.)", f"${current_m_avg:.4f}/gal",
               help=f"Historical avg for {calendar.month_name[current_m]}")
     d2.metric("Live vs Seasonal Avg", f"{delta_vs_seasonal:+.2f}%",
               delta=f"{delta_vs_seasonal:+.2f}%",
               help="Positive = currently trading above seasonal norm")
-
     avgs_plot  = [a if a is not None else 0 for a in avgs]
     bar_colors = ["#f5a623" if i+1==current_m else "#00d4ff" for i in range(12)]
     fig = go.Figure()
@@ -1405,7 +1550,6 @@ def render_var_es(result, agent):
     var_data = result.get("var_es",{})
     if not var_data:
         return
-
     horizons_shown = ["1M","3M"]
     cols = st.columns(len(horizons_shown)*2)
     col_i=0
@@ -1418,7 +1562,6 @@ def render_var_es(result, agent):
         cols[col_i+1].metric(f"ES {h} ({conf}%)", f"${d['es']:.4f}/gal" if ho else f"${d['es']:.2f}/bbl",
             help="Average loss beyond VaR (Conditional VaR / CVaR)")
         col_i+=2
-
     c1,c2 = st.columns(2)
     for ci,h in enumerate(horizons_shown):
         d = var_data.get(h,{})
@@ -1449,7 +1592,6 @@ def render_sidebar():
         Commodity Probability Engine
       </div>
     </div>""", unsafe_allow_html=True)
-
     # ── Logged-in user + logout ───────────────────────────────────────────────
     auth_user = st.session_state.get("auth_user", "")
     if auth_user:
@@ -1461,14 +1603,10 @@ def render_sidebar():
         if st.sidebar.button("Sign out", use_container_width=True, key="sidebar_logout"):
             _auth_logout()
             st.rerun()
-
     st.sidebar.divider()
-
     sess = st.session_state.get("_session_id", id(st.session_state))
-
     run_oil = st.sidebar.button("Oil (WTI/Brent)", use_container_width=True)
     run_ho  = st.sidebar.button("HO (Heating Oil)", use_container_width=True)
-
     if run_oil:
         allowed,_,reset_in=limiter.check(sess)
         if not allowed:
@@ -1481,7 +1619,6 @@ def render_sidebar():
                         sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
                 except Exception as e:
                     st.error(f"Error: {e}")
-
     if run_ho:
         allowed,_,reset_in=limiter.check(sess)
         if not allowed:
@@ -1494,7 +1631,6 @@ def render_sidebar():
                         sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
                 except Exception as e:
                     st.error(f"Error: {e}")
-
     # ── Refresh button — busts the 5-min cache on demand ─────────────────────
     if st.session_state.result is not None:
         if st.sidebar.button("Refresh Data", use_container_width=True,
@@ -1516,48 +1652,41 @@ def render_sidebar():
                         st.rerun()
                     except Exception as e:
                         st.error(f"Refresh error: {e}")
-
     result=st.session_state.result
     if result:
         st.sidebar.divider()
         st.sidebar.markdown("**Cross-Filters**")
         st.sidebar.caption("Selections update all charts simultaneously")
-
         h = st.sidebar.radio("Horizon",HORIZONS,index=HORIZONS.index(st.session_state.sel_horizon),horizontal=True)
         try: h=validate_enum(sanitize_str(h),set(HORIZONS))
         except ValueError: h="1M"
         st.session_state.sel_horizon=h
-
         sp=result.get("scenario_paths",{})
         scen_opts=["(All)"]+list(sp.keys())
         sel_s=st.sidebar.selectbox("Scenario",scen_opts,index=0 if not st.session_state.sel_scenario else
             (scen_opts.index(st.session_state.sel_scenario) if st.session_state.sel_scenario in scen_opts else 0))
         st.session_state.sel_scenario=None if sel_s=="(All)" else sanitize_str(sel_s)
-
         rp=result.get("regional_prices",[])
         reg_opts=["(All)"]+[r["region"] for r in rp]
         sel_r=st.sidebar.selectbox("Region",reg_opts,index=0 if not st.session_state.sel_region else
             (reg_opts.index(st.session_state.sel_region) if st.session_state.sel_region in reg_opts else 0))
         st.session_state.sel_region=None if sel_r=="(All)" else sanitize_str(sel_r)
-
         rows=result.get("prob_table",{}).get(h,[])
         bins=["(All)"]+[r[0] for r in rows]
         sel_b=st.sidebar.selectbox("Price Bin",bins,index=0 if not st.session_state.sel_bin else
             (bins.index(st.session_state.sel_bin) if st.session_state.sel_bin in bins else 0))
         st.session_state.sel_bin=None if sel_b=="(All)" else sanitize_str(sel_b)
-
         if st.sidebar.button("Clear all filters",use_container_width=True):
             st.session_state.update(sel_horizon="1M",sel_bin=None,sel_scenario=None,sel_region=None,sel_driver=None)
             st.rerun()
-
     if st.session_state.get("auth_is_admin"):
         render_admin_panel()
-
     st.sidebar.divider()
     st.sidebar.markdown("""
     <div style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace;line-height:1.8">
     Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">lsaggioro@potonmail.com</a>
     </div>""",unsafe_allow_html=True)
+
 
 def render_dashboard():
     result  = st.session_state.result
@@ -1566,7 +1695,6 @@ def render_dashboard():
     sel_bin = st.session_state.sel_bin
     sel_scen= st.session_state.sel_scenario
     sel_reg = st.session_state.sel_region
-
     if not result:
         st.markdown("""
         <div style="text-align:center;padding:80px 0">
@@ -1581,30 +1709,26 @@ def render_dashboard():
           </div>
         </div>""",unsafe_allow_html=True)
         return
-
     ho = agent=="ho"
-
     render_snapshot(result, agent)
     render_price_history(result, agent)
     render_prob_dist(result, agent, sel_h, sel_bin)
     render_volatility(result)
     render_scenario(result, agent, sel_scen)
     render_regional(result, agent, sel_reg)
-
     if ho:
+        render_ko_table(result, agent)
+        render_expiry_distribution_table(result, agent)
         render_eia_deep_dive(result)
         render_crack_spread(result, agent)
         render_seasonal_pattern(result, agent)
         render_var_es(result, agent)
-
     section("--","MARKET SUMMARY")
     with st.expander("View full summary",expanded=False):
         st.code(result.get("summary",""),language=None)
-
     with st.expander("Run log",expanded=False):
         st.markdown('<div class="status-box">'+"\n".join(st.session_state.log or [])+"</div>",
             unsafe_allow_html=True)
-
     with st.expander("Security audit",expanded=False):
         st.code(security_audit_report(),language=None)
 
