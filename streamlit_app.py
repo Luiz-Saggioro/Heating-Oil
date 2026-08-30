@@ -215,15 +215,15 @@ _AUTH_CSS = """
 <style>
 .auth-wrap{max-width:400px;margin:80px auto;}
 .auth-card{
-  padding:40px 36px;background:#0a0e18;
-  border:1px solid #1a2540;border-radius:12px;
+  padding:40px 36px;background:#0f1520;
+  border:1px solid #263545;border-radius:12px;
 }
 .auth-title{
-  font-size:22px;font-weight:800;color:#c8d8ec;
+  font-size:22px;font-weight:800;color:#d8e8f5;
   font-family:'Syne',sans-serif;margin-bottom:4px;
 }
 .auth-sub{
-  font-size:10px;color:#4a6080;
+  font-size:10px;color:#7090b0;
   font-family:'JetBrains Mono',monospace;
   letter-spacing:1.2px;text-transform:uppercase;margin-bottom:28px;
 }
@@ -425,45 +425,45 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@600;700;800&display=swap');
 html,body,[class*="css"]{font-family:'Syne',sans-serif;}
 code,.stCode,pre{font-family:'JetBrains Mono',monospace!important;}
-.stApp{background:#07090f!important;}
-.stPlotlyChart{background:#07090f!important;}
-.stPlotlyChart>div{background:#07090f!important;}
-div[data-testid="stPlotlyChart"]{background:#07090f!important;}
-div[data-testid="block-container"]{background:#07090f!important;}
-div[data-testid="stVerticalBlock"]{background:#07090f!important;}
-div[data-testid="column"]{background:#07090f!important;}
-div[data-testid="stHorizontalBlock"]{background:#07090f!important;}
+.stApp{background:#13191f!important;}
+.stPlotlyChart{background:#13191f!important;}
+.stPlotlyChart>div{background:#13191f!important;}
+div[data-testid="stPlotlyChart"]{background:#13191f!important;}
+div[data-testid="block-container"]{background:#13191f!important;}
+div[data-testid="stVerticalBlock"]{background:#13191f!important;}
+div[data-testid="column"]{background:#13191f!important;}
+div[data-testid="stHorizontalBlock"]{background:#13191f!important;}
 .element-container{background:transparent!important;}
-section[data-testid="stSidebar"]{background:#0a0e18;border-right:1px solid #1a2540;}
-section[data-testid="stSidebar"] .stMarkdown{color:#c8d8ec;}
-div[data-testid="metric-container"]{background:#07090f;border:1px solid #1a2540;border-radius:8px;padding:12px 16px;transition:border-color .2s;}
-div[data-testid="metric-container"]:hover{border-color:#243660;}
-div[data-testid="metric-container"] label{color:#4a6080!important;font-family:'JetBrains Mono',monospace!important;font-size:9px!important;text-transform:uppercase;letter-spacing:1px;}
-div[data-testid="metric-container"] div[data-testid="stMetricValue"]{color:#c8d8ec!important;font-family:'JetBrains Mono',monospace!important;}
-h1,h2,h3{font-family:'Syne',sans-serif!important;color:#c8d8ec!important;}
-.stButton>button{background:linear-gradient(90deg,#f5a623,#d4850e);color:#000;border:none;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.5px;transition:opacity .15s;}
+section[data-testid="stSidebar"]{background:#0f1520;border-right:1px solid #263545;}
+section[data-testid="stSidebar"] .stMarkdown{color:#d8e8f5;}
+div[data-testid="metric-container"]{background:#13191f;border:1px solid #263545;border-radius:8px;padding:12px 16px;transition:border-color .2s;}
+div[data-testid="metric-container"]:hover{border-color:#2e4a6a;}
+div[data-testid="metric-container"] label{color:#7090b0!important;font-family:'JetBrains Mono',monospace!important;font-size:9px!important;text-transform:uppercase;letter-spacing:1px;}
+div[data-testid="metric-container"] div[data-testid="stMetricValue"]{color:#d8e8f5!important;font-family:'JetBrains Mono',monospace!important;}
+h1,h2,h3{font-family:'Syne',sans-serif!important;color:#d8e8f5!important;}
+.stButton>button{background:linear-gradient(90deg,#d99020,#b87818);color:#000;border:none;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.5px;transition:opacity .15s;}
 .stButton>button:hover{opacity:.85;}
-.stSelectbox,.stRadio{color:#c8d8ec;}
-.stSelectbox>div>div{background:#07090f;border-color:#1a2540;color:#c8d8ec;}
-hr{border-color:#1a2540;}
-.status-box{background:#07090f;border:1px solid #1a2540;border-radius:8px;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#4a6080;line-height:1.8;white-space:pre;overflow-x:auto;}
+.stSelectbox,.stRadio{color:#d8e8f5;}
+.stSelectbox>div>div{background:#13191f;border-color:#263545;color:#d8e8f5;}
+hr{border-color:#263545;}
+.status-box{background:#13191f;border:1px solid #263545;border-radius:8px;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#7090b0;line-height:1.8;white-space:pre;overflow-x:auto;}
 .js-plotly-plot{border-radius:8px;}
 </style>
 """, unsafe_allow_html=True)
 # ── PLOTLY THEME ──────────────────────────────────────────────────────────────
 _tmpl = go.layout.Template(layout=go.Layout(
-    paper_bgcolor="#07090f", plot_bgcolor="#07090f",
-    font=dict(family="JetBrains Mono, monospace", color="#4a6080", size=10),
-    colorway=["#00d4ff","#f5a623","#1df5a0","#ff3d5a","#9d7aff","#ffd060"],
-    xaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
-    yaxis=dict(gridcolor="#1a2540", zerolinecolor="#1a2540"),
-    legend=dict(bgcolor="rgba(7,9,15,.85)", bordercolor="#1a2540", borderwidth=1),
+    paper_bgcolor="#13191f", plot_bgcolor="#13191f",
+    font=dict(family="JetBrains Mono, monospace", color="#7090b0", size=10),
+    colorway=["#3a8fd5","#d99020","#28b26c","#d83c3c","#7868d0","#c8a030"],
+    xaxis=dict(gridcolor="#263545", zerolinecolor="#263545"),
+    yaxis=dict(gridcolor="#263545", zerolinecolor="#263545"),
+    legend=dict(bgcolor="rgba(19,25,31,.90)", bordercolor="#263545", borderwidth=1),
     margin=dict(l=50,r=20,t=40,b=40),
 ))
 pio.templates["energy_dark"] = _tmpl
 pio.templates.default = "plotly_dark+energy_dark"
 PT = "plotly_dark+energy_dark"
-SCEN_COLORS = ["#00d4ff","#ffd060","#ff6b35","#ff3d5a","#9d7aff"]
+SCEN_COLORS = ["#3a8fd5","#c8a030","#c85528","#d83c3c","#7868d0"]
 HORIZONS    = ["1M","3M","6M","9M","12M"]
 _PCFG = {"displayModeBar":False,"displaylogo":False}
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
@@ -522,12 +522,12 @@ def fetch_live_prices():
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def section(num, title, hint=""):
     st.markdown(f"""
-    <div style="margin-top:28px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #1a2540;
+    <div style="margin-top:28px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #263545;
                 display:flex;align-items:center;justify-content:space-between">
-      <span style="font-size:12px;font-weight:700;color:#4a6080;text-transform:uppercase;letter-spacing:1.8px">
+      <span style="font-size:12px;font-weight:700;color:#7090b0;text-transform:uppercase;letter-spacing:1.8px">
         {num} {title}
       </span>
-      <span style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace">{hint}</span>
+      <span style="font-size:9px;color:#455870;font-family:'JetBrains Mono',monospace">{hint}</span>
     </div>""", unsafe_allow_html=True)
 
 def next_biz_days(n):
@@ -650,8 +650,8 @@ def render_price_history(result, agent):
     ho          = agent == "ho"
     daily_hist  = result.get("history", [])
     ticker_name = "HO" if ho else "WTI"
-    color       = "#f5a623" if ho else "#00d4ff"
-    fill_rgba   = "245,166,35" if ho else "0,212,255"
+    color       = "#d99020" if ho else "#3a8fd5"
+    fill_rgba   = "210,140,30" if ho else "58,143,213"
     # Period options — "1 Hour" removed (unreliable intraday source)
     PERIOD_OPTS  = ["1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
     INTRADAY_SET = {"1 Day", "1 Week"}
@@ -678,7 +678,7 @@ def render_price_history(result, agent):
         xaxis_cfg = dict(
             type="date",
             tickformat=tick_fmt,
-            rangeslider=dict(visible=True, bgcolor="#07090f"),
+            rangeslider=dict(visible=True, bgcolor="#13191f"),
         )
         ma_n = min(6, max(1, len(prices) // 4))
     # ── Daily path (1M and longer) ────────────────────────────────────────────
@@ -696,7 +696,7 @@ def render_price_history(result, agent):
                         or any(r.get("synthetic") for r in filtered))
         xaxis_cfg = dict(
             type="date",
-            rangeslider=dict(visible=True, bgcolor="#07090f"),
+            rangeslider=dict(visible=True, bgcolor="#13191f"),
         )
         ma_n = min(20, max(1, len(prices) // 2)) if ho else min(7, max(1, len(prices) // 2))
     # ── Synthetic warning ─────────────────────────────────────────────────────
@@ -729,14 +729,14 @@ def render_price_history(result, agent):
         hovertemplate="$%{y:.4f}<extra></extra>" if ho else "$%{y:.2f}<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=labels, y=ma, name=f"{ma_n}pt MA",
-        line=dict(color="#9d7aff", width=1.5, dash="dot"),
+        line=dict(color="#7868d0", width=1.5, dash="dot"),
         hovertemplate="MA: $%{y:.4f}<extra></extra>" if ho else "MA: $%{y:.2f}<extra></extra>"))
     fig.update_layout(
-        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=520,
+        template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=520,
         title=dict(
             text=(f"HO1 — {front_ticker} — Price History ({period_s})"
                   if ho else f"WTI Crude — Price History ({period_s})"),
-            font=dict(size=12, color="#c8d8ec")),
+            font=dict(size=12, color="#d8e8f5")),
         xaxis=xaxis_cfg,
         yaxis=dict(tickformat="$.4f" if ho else "$.2f", range=yrange),
         hovermode="x unified",
@@ -757,16 +757,16 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
     maxP  = max(probs)
     colors = []
     for b,p in zip(bins,probs):
-        if sel_bin and b==sel_bin: colors.append("#00d4ff")
-        elif sel_bin:              colors.append("rgba(0,212,255,.2)")
-        elif p==maxP:              colors.append("#f5a623")
-        else:                      colors.append("#00d4ff" if ho else "#f5a623")
+        if sel_bin and b==sel_bin: colors.append("#3a8fd5")
+        elif sel_bin:              colors.append("rgba(58,143,213,.2)")
+        elif p==maxP:              colors.append("#d99020")
+        else:                      colors.append("#3a8fd5" if ho else "#d99020")
     with c1:
         fig=go.Figure(go.Bar(y=bins,x=probs,orientation="h",marker_color=colors,
             text=[f"{p:.1f}%" for p in probs],textposition="outside",
             hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=360,
-            title=dict(text=f"Probability by Price Bin — {sel_h}",font=dict(size=11,color="#c8d8ec")),
+        fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=360,
+            title=dict(text=f"Probability by Price Bin — {sel_h}",font=dict(size=11,color="#d8e8f5")),
             xaxis=dict(title="Probability (%)",ticksuffix="%"),
             yaxis=dict(autorange="reversed"),bargap=0.15,showlegend=False)
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("prob_bar"))
@@ -774,11 +774,11 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
         cum=0; cdf=[]
         for _,p in rows: cum+=p; cdf.append(round(cum*100,2))
         fig=go.Figure(go.Scatter(x=bins,y=cdf,mode="lines+markers",
-            line=dict(color="#9d7aff",width=2),marker=dict(size=4,color="#9d7aff"),
-            fill="tozeroy",fillcolor="rgba(157,122,255,.07)",
+            line=dict(color="#7868d0",width=2),marker=dict(size=4,color="#7868d0"),
+            fill="tozeroy",fillcolor="rgba(110,96,200,.07)",
             hovertemplate="%{x}: P(<=) = %{y:.1f}%<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=360,
-            title=dict(text=f"Cumulative Distribution — {sel_h}",font=dict(size=11,color="#c8d8ec")),
+        fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=360,
+            title=dict(text=f"Cumulative Distribution — {sel_h}",font=dict(size=11,color="#d8e8f5")),
             yaxis=dict(title="Cumulative Probability (%)",ticksuffix="%",range=[0,100]),
             xaxis=dict(title="Price Range"))
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("cdf"))
@@ -798,22 +798,22 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
             with c_a:
                 fig=go.Figure()
                 fig.add_trace(go.Scatter(x=ls["x"],y=ls["y"],mode="lines",
-                    line=dict(color="#f5a623",width=2),fill="tozeroy",
-                    fillcolor="rgba(245,166,35,.10)",
+                    line=dict(color="#d99020",width=2),fill="tozeroy",
+                    fillcolor="rgba(210,140,30,.10)",
                     hovertemplate="Price: $%{x:.4f}<br>PDF: %{y:.5f}<extra></extra>"))
-                fig.add_vline(x=ls["mean"],  line=dict(color="#00d4ff",dash="dash",width=1.5),
+                fig.add_vline(x=ls["mean"],  line=dict(color="#3a8fd5",dash="dash",width=1.5),
                               annotation_text=f"Mean ${ls['mean']:.4f}",
-                              annotation_font=dict(color="#00d4ff",size=9))
-                fig.add_vline(x=ls["median"],line=dict(color="#1df5a0",dash="dot",width=1.5),
+                              annotation_font=dict(color="#3a8fd5",size=9))
+                fig.add_vline(x=ls["median"],line=dict(color="#28b26c",dash="dot",width=1.5),
                               annotation_text=f"Median ${ls['median']:.4f}",
-                              annotation_font=dict(color="#1df5a0",size=9))
-                fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=260,
-                    title=dict(text="Log-Normal PDF — shape, skewness, kurtosis",font=dict(size=11,color="#c8d8ec")),
+                              annotation_font=dict(color="#28b26c",size=9))
+                fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=260,
+                    title=dict(text="Log-Normal PDF — shape, skewness, kurtosis",font=dict(size=11,color="#d8e8f5")),
                     xaxis=dict(title="HO Price ($/gal)"),yaxis=dict(title="Probability Density"),showlegend=False)
                 st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("lognorm"))
             with c_b:
-                st.markdown("""<div style="padding:16px;background:#0d1220;border:1px solid #1a2540;border-radius:8px;
-                    font-family:'JetBrains Mono',monospace;font-size:11px;line-height:2;color:#c8d8ec">""",
+                st.markdown("""<div style="padding:16px;background:#111820;border:1px solid #263545;border-radius:8px;
+                    font-family:'JetBrains Mono',monospace;font-size:11px;line-height:2;color:#d8e8f5">""",
                     unsafe_allow_html=True)
                 st.metric("Mean",    f"${ls['mean']:.4f}")
                 st.metric("Median",  f"${ls['median']:.4f}")
@@ -825,24 +825,24 @@ def _render_prob_table(result, agent, sel_h, sel_bin):
     ho   = agent=="ho"
     rows = result.get("prob_table",{})
     if not rows: return
-    th = "padding:7px 12px;background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
-    td = "padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
+    th = "padding:7px 12px;background:#111820;color:#7090b0;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #263545;text-align:center;white-space:nowrap;"
+    td = "padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #1a2535;text-align:center;"
     heads = "".join(f'<th style="{th}">{h}</th>' for h in ["Bin"]+HORIZONS)
     bin_keys = [r[0] for r in rows.get(HORIZONS[0],[])]
     body = ""
     for b in bin_keys:
         sel = sel_bin==b
-        row_bg = "background:#0a1e30;" if sel else ""
-        cells = f'<td style="{td}{row_bg}color:#c8d8ec;font-weight:{"700" if sel else "400"}">{b}</td>'
+        row_bg = "background:#142538;" if sel else ""
+        cells = f'<td style="{td}{row_bg}color:#d8e8f5;font-weight:{"700" if sel else "400"}">{b}</td>'
         for h in HORIZONS:
             p = next((r[1] for r in rows.get(h,[]) if r[0]==b), 0)
             pct = round(p*100,1)
-            c = "#f5a623" if (h==sel_h and pct==max(round(r[1]*100,1) for r in rows.get(h,[]))) else "#c8d8ec"
+            c = "#d99020" if (h==sel_h and pct==max(round(r[1]*100,1) for r in rows.get(h,[]))) else "#d8e8f5"
             cells += f'<td style="{td}{row_bg}color:{c}">{pct:.1f}%</td>'
         body += f"<tr>{cells}</tr>"
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #263545;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#13191f">'
         f'<thead><tr>{heads}</tr></thead><tbody>{body}</tbody></table></div>',
         unsafe_allow_html=True)
 
@@ -896,7 +896,7 @@ def render_volatility(result):
     y_lower = round(max(0, v_min * 0.80), 2)
     avg     = float(df["vol"].mean())
 
-    line_color = "#f5a623" if result.get("agent") == "ho" else "#00d4ff"
+    line_color = "#d99020" if result.get("agent") == "ho" else "#3a8fd5"
     fig = go.Figure()
 
     # Rolling 10-day
@@ -908,24 +908,24 @@ def render_volatility(result):
     # Rolling 30-day
     if roll30_vals:
         fig.add_trace(go.Scatter(x=roll30_dates,y=roll30_vals,mode="lines",
-            line=dict(color="#9d7aff",width=1.8,dash="dot"),
+            line=dict(color="#7868d0",width=1.8,dash="dot"),
             name="Rolling 30d Ann. Vol",
             hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>30d RVol</extra>"))
 
     # Average reference line
-    fig.add_hline(y=avg,line=dict(color="#ffd060",width=1,dash="dash"),
+    fig.add_hline(y=avg,line=dict(color="#c8a030",width=1,dash="dash"),
         annotation_text=f"10d Avg {avg:.1f}%",
-        annotation_font=dict(color="#ffd060",size=9))
+        annotation_font=dict(color="#c8a030",size=9))
 
     # OVX implied vol proxy — horizontal band
     if ovx_val:
-        fig.add_hline(y=ovx_val,line=dict(color="#1df5a0",width=1.5,dash="dashdot"),
+        fig.add_hline(y=ovx_val,line=dict(color="#28b26c",width=1.5,dash="dashdot"),
             annotation_text=f"OVX IV Proxy {ovx_val:.1f}%",
-            annotation_font=dict(color="#1df5a0",size=9))
+            annotation_font=dict(color="#28b26c",size=9))
 
-    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
+    fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=320,
         title=dict(text=f"Realised Volatility (10d / 30d) + OVX Implied Vol Proxy — {period}",
-                   font=dict(size=11,color="#c8d8ec")),
+                   font=dict(size=11,color="#d8e8f5")),
         xaxis=dict(title="",type="date"),
         yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper]),
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1),
@@ -996,14 +996,14 @@ def render_ko_table(result, agent):
 
     # ── Styled HTML table ─────────────────────────────────────────────────────
     th = (
-        "padding:7px 14px;background:#0d1220;color:#4a6080;"
+        "padding:7px 14px;background:#111820;color:#7090b0;"
         "font-family:'JetBrains Mono',monospace;font-size:9px;"
         "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
+        "border-bottom:1px solid #263545;text-align:center;white-space:nowrap;"
     )
     td = (
         "padding:6px 14px;font-family:'JetBrains Mono',monospace;"
-        "font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
+        "font-size:11px;border-bottom:1px solid #1a2535;text-align:center;"
     )
 
     headers = ["Contract", "Expiry", "Futures Price", "KO Price", "P(Touch KO)"]
@@ -1014,26 +1014,26 @@ def render_ko_table(result, agent):
         prob = r["ko_prob"]
         # Color scale: green (low risk) → orange → red (high risk)
         if prob >= 75:
-            pc = "#ff3d5a"
+            pc = "#d83c3c"
         elif prob >= 50:
-            pc = "#ffd060"
+            pc = "#c8a030"
         elif prob >= 25:
-            pc = "#f5a623"
+            pc = "#d99020"
         else:
-            pc = "#1df5a0"
+            pc = "#28b26c"
         body_html += (
             f'<tr>'
-            f'<td style="{td}color:#c8d8ec;font-weight:600">{r["label"]}</td>'
-            f'<td style="{td}color:#4a6080">{r["expiry"]}</td>'
-            f'<td style="{td}color:#c8d8ec">${r["fwd_price"]:.4f}</td>'
-            f'<td style="{td}color:#9d7aff">${r["ko_price"]:.4f}</td>'
+            f'<td style="{td}color:#d8e8f5;font-weight:600">{r["label"]}</td>'
+            f'<td style="{td}color:#7090b0">{r["expiry"]}</td>'
+            f'<td style="{td}color:#d8e8f5">${r["fwd_price"]:.4f}</td>'
+            f'<td style="{td}color:#7868d0">${r["ko_price"]:.4f}</td>'
             f'<td style="{td}color:{pc};font-weight:700">{prob:.1f}%</td>'
             f'</tr>'
         )
 
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #263545;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#13191f">'
         f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
         unsafe_allow_html=True,
     )
@@ -1042,10 +1042,10 @@ def render_ko_table(result, agent):
     labels = [r["label"] for r in rows]
     probs  = [r["ko_prob"] for r in rows]
     colors = [
-        "#ff3d5a" if p >= 75 else
-        "#ffd060" if p >= 50 else
-        "#f5a623" if p >= 25 else
-        "#1df5a0"
+        "#d83c3c" if p >= 75 else
+        "#c8a030" if p >= 50 else
+        "#d99020" if p >= 25 else
+        "#28b26c"
         for p in probs
     ]
     y_max = min(110, max(probs) * 1.25) if probs else 110
@@ -1058,10 +1058,10 @@ def render_ko_table(result, agent):
         hovertemplate="%{x}: %{y:.1f}%<extra></extra>",
     ))
     fig.update_layout(
-        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=240,
+        template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=240,
         title=dict(
             text=f"P(Touch KO ${ko_price:.4f}) by Contract",
-            font=dict(size=10, color="#c8d8ec")),
+            font=dict(size=10, color="#d8e8f5")),
         yaxis=dict(title="Probability (%)", ticksuffix="%", range=[0, y_max]),
         xaxis=dict(title="Contract"),
         showlegend=False, bargap=0.2, margin=dict(l=50, r=20, t=40, b=40),
@@ -1137,14 +1137,14 @@ def render_expiry_distribution_table(result, agent):
 
     # ── Styled heatmap HTML table ─────────────────────────────────────────────
     th = (
-        "padding:7px 10px;background:#0d1220;color:#4a6080;"
+        "padding:7px 10px;background:#111820;color:#7090b0;"
         "font-family:'JetBrains Mono',monospace;font-size:9px;"
         "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #1a2540;text-align:center;white-space:nowrap;"
+        "border-bottom:1px solid #263545;text-align:center;white-space:nowrap;"
     )
     td = (
         "padding:5px 10px;font-family:'JetBrains Mono',monospace;"
-        "font-size:10px;border-bottom:1px solid #0f1825;text-align:center;"
+        "font-size:10px;border-bottom:1px solid #1a2535;text-align:center;"
     )
 
     fixed_hdrs = ["Contract", "Expiry", "Fwd Price"]
@@ -1158,24 +1158,24 @@ def render_expiry_distribution_table(result, agent):
         bp     = r["bin_probs"]
         max_bp = max(bp) if bp else 1.0
         cells  = (
-            f'<td style="{td}color:#c8d8ec;font-weight:600">{r["label"]}</td>'
-            f'<td style="{td}color:#4a6080">{r["expiry"]}</td>'
-            f'<td style="{td}color:#c8d8ec">${r["fwd_price"]:.4f}</td>'
+            f'<td style="{td}color:#d8e8f5;font-weight:600">{r["label"]}</td>'
+            f'<td style="{td}color:#7090b0">{r["expiry"]}</td>'
+            f'<td style="{td}color:#d8e8f5">${r["fwd_price"]:.4f}</td>'
         )
         for p in bp:
             intensity = p / max_bp if max_bp > 0 else 0
             # Heat color: highest bin in each row = bright orange, moderate = blue, low = dim
             if intensity > 0.65:
-                cell_bg = "rgba(245,166,35,0.22)"
-                tc = "#ffd060"
+                cell_bg = "rgba(210,140,30,0.22)"
+                tc = "#c8a030"
                 fw = "700"
             elif intensity > 0.35:
                 cell_bg = "rgba(0,212,255,0.10)"
-                tc = "#00d4ff"
+                tc = "#3a8fd5"
                 fw = "400"
             else:
                 cell_bg = "transparent"
-                tc = "#3a5070"
+                tc = "#4a6070"
                 fw = "400"
             cells += (
                 f'<td style="{td}background:{cell_bg};color:{tc};font-weight:{fw}">'
@@ -1184,8 +1184,8 @@ def render_expiry_distribution_table(result, agent):
         body_html += f"<tr>{cells}</tr>"
 
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #263545;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#13191f">'
         f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
         unsafe_allow_html=True,
     )
@@ -1206,26 +1206,26 @@ def render_expiry_distribution_table(result, agent):
             x=x_labels,
             y=y_labels,
             colorscale=[
-                [0.0,  "#07090f"],
-                [0.35, "#0d2040"],
-                [0.65, "#1a4080"],
-                [0.85, "#f5a623"],
-                [1.0,  "#ffd060"],
+                [0.0,  "#13191f"],
+                [0.35, "#112038"],
+                [0.65, "#1e4a90"],
+                [0.85, "#d99020"],
+                [1.0,  "#c8a030"],
             ],
             hovertemplate="Contract: %{y}<br>Range: %{x}<br>Probability: %{z:.1f}%<extra></extra>",
             showscale=True,
             colorbar=dict(
-                title=dict(text="Prob (%)", font=dict(color="#4a6080", size=9)),
-                tickfont=dict(color="#4a6080", size=9),
-                bgcolor="#07090f",
-                bordercolor="#1a2540",
+                title=dict(text="Prob (%)", font=dict(color="#7090b0", size=9)),
+                tickfont=dict(color="#7090b0", size=9),
+                bgcolor="#13191f",
+                bordercolor="#263545",
             ),
         ))
         fig.update_layout(
-            template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=360,
+            template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=360,
             title=dict(
                 text="Settlement Probability Heatmap — Contract × Price Range",
-                font=dict(size=10, color="#c8d8ec")),
+                font=dict(size=10, color="#d8e8f5")),
             xaxis=dict(title="Price Range", tickfont=dict(size=9)),
             yaxis=dict(title="Contract", autorange="reversed", tickfont=dict(size=9)),
             margin=dict(l=100, r=80, t=40, b=80),
@@ -1258,13 +1258,13 @@ def render_scenario(result, agent, sel_scen):
         sig_names  = ["Crack Spread","VIX","EIA Inventory","Seasonal"]
         sig_values = [sigs.get("crack_signal_ann",0),sigs.get("vix_signal_ann",0),
                       sigs.get("eia_signal_ann",0),sigs.get("seasonal_signal_ann",0)]
-        sig_colors = ["#1df5a0" if v>=0 else "#ff3d5a" for v in sig_values]
+        sig_colors = ["#28b26c" if v>=0 else "#d83c3c" for v in sig_values]
         fig_sig = go.Figure(go.Bar(
             x=sig_names, y=sig_values, marker_color=sig_colors,
             text=[f"{v:+.2f}%" for v in sig_values], textposition="outside",
             hovertemplate="%{x}: %{y:+.2f}% ann.<extra></extra>"))
-        fig_sig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=180,
-            title=dict(text="Signal Decomposition — Drift Contribution (ann.%)",font=dict(size=10,color="#c8d8ec")),
+        fig_sig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=180,
+            title=dict(text="Signal Decomposition — Drift Contribution (ann.%)",font=dict(size=10,color="#d8e8f5")),
             yaxis=dict(title="Drift (%)", ticksuffix="%"),
             showlegend=False, bargap=0.3, margin=dict(l=40,r=20,t=36,b=30))
         st.plotly_chart(fig_sig, use_container_width=True, config=_PCFG, key=_pc("sig_decomp"))
@@ -1277,32 +1277,32 @@ def render_scenario(result, agent, sel_scen):
             name=sname, line=dict(color=SCEN_COLORS[i%5],width=wid), opacity=opa,
             hovertemplate=f"<b>{sname}</b><br>${{y:.4f}}<br><i>{hover_lbl}</i><extra></extra>"))
     fmt="$.4f" if ho else "$.2f"
-    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=340,
+    fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=340,
         title=dict(text="14-Day Scenario Simulation Paths (Dynamic Drift + VIX-Scaled Vol)",
-                   font=dict(size=11,color="#c8d8ec")),
+                   font=dict(size=11,color="#d8e8f5")),
         yaxis=dict(tickformat=fmt),hovermode="x unified",
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen"))
     if ho and sp:
         st.markdown("**Scenario Parameters** — effective drift and volatility after signal adjustments")
         rows_html = ""
-        th = "padding:7px 14px;background:#0d1220;color:#4a6080;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #1a2540;text-align:center;"
-        td = "padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #0f1825;text-align:center;"
+        th = "padding:7px 14px;background:#111820;color:#7090b0;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #263545;text-align:center;"
+        td = "padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #1a2535;text-align:center;"
         for i,(sname,path) in enumerate(sp.items()):
             drift = path.get("total_drift", 0)
             vol   = path.get("vol_ann", 0)
             lbl   = path.get("label","")
-            bg    = "background:#0a1e30;" if sel_scen==sname else ""
-            dc    = "color:#1df5a0;" if drift>=0 else "color:#ff3d5a;"
+            bg    = "background:#142538;" if sel_scen==sname else ""
+            dc    = "color:#28b26c;" if drift>=0 else "color:#d83c3c;"
             rows_html += f"""<tr>
               <td style="{td}{bg}color:{SCEN_COLORS[i%5]};font-weight:700">{sname}</td>
               <td style="{td}{bg}{dc}">{drift:+.1f}%</td>
-              <td style="{td}{bg}color:#9d7aff;">{vol:.1f}%</td>
-              <td style="{td}{bg}color:#4a6080;font-size:9px;text-align:left">{lbl}</td>
+              <td style="{td}{bg}color:#7868d0;">{vol:.1f}%</td>
+              <td style="{td}{bg}color:#7090b0;font-size:9px;text-align:left">{lbl}</td>
             </tr>"""
         st.markdown(
-            f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #1a2540;margin-bottom:16px">'
-            f'<table style="width:100%;border-collapse:collapse;background:#07090f">'
+            f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #263545;margin-bottom:16px">'
+            f'<table style="width:100%;border-collapse:collapse;background:#13191f">'
             f'<thead><tr>'
             f'<th style="{th}text-align:left">Scenario</th>'
             f'<th style="{th}">Drift (ann.)</th>'
@@ -1313,12 +1313,12 @@ def render_scenario(result, agent, sel_scen):
     c1,c2 = st.columns(2)
     with c1:
         names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
-        _DIM=["rgba(0,212,255,.2)","rgba(255,208,96,.2)","rgba(255,107,53,.2)","rgba(255,61,90,.2)","rgba(157,122,255,.2)"]
+        _DIM=["rgba(58,143,213,.2)","rgba(195,155,40,.2)","rgba(200,85,45,.2)","rgba(210,60,60,.2)","rgba(110,96,200,.2)"]
         cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else _DIM[i%5] for i,n in enumerate(names_s)]
         fig=go.Figure(go.Bar(x=names_s,y=finals,marker_color=cols_s,
             text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in finals],textposition="outside"))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
-            title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=10,color="#c8d8ec")),
+        fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=240,
+            title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=10,color="#d8e8f5")),
             yaxis=dict(tickformat="$.4f" if ho else "$.2f"),showlegend=False,bargap=0.2)
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen_final"))
     with c2:
@@ -1327,12 +1327,12 @@ def render_scenario(result, agent, sel_scen):
         w80=[round((cib.get(h,{}).get("ci80",[0,0])[1]-cib.get(h,{}).get("ci80",[0,0])[0]),4) for h in HORIZONS]
         mids=[cib.get(h,{}).get("mid",0) for h in HORIZONS]
         fig=go.Figure()
-        fig.add_trace(go.Bar(x=HORIZONS,y=w95,name="95% CI Width",marker_color="rgba(29,245,160,.65)"))
-        fig.add_trace(go.Bar(x=HORIZONS,y=w80,name="80% CI Width",marker_color="rgba(0,212,255,.5)"))
+        fig.add_trace(go.Bar(x=HORIZONS,y=w95,name="95% CI Width",marker_color="rgba(40,178,108,.65)"))
+        fig.add_trace(go.Bar(x=HORIZONS,y=w80,name="80% CI Width",marker_color="rgba(58,143,213,.5)"))
         fig.add_trace(go.Scatter(x=HORIZONS,y=mids,name="Midpoint",mode="lines+markers",
-            line=dict(color="#ffd060",width=1.5,dash="dot"),marker=dict(size=5)))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
-            title=dict(text="Forecast Uncertainty by Horizon (CI Width)",font=dict(size=10,color="#c8d8ec")),
+            line=dict(color="#c8a030",width=1.5,dash="dot"),marker=dict(size=5)))
+        fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=240,
+            title=dict(text="Forecast Uncertainty by Horizon (CI Width)",font=dict(size=10,color="#d8e8f5")),
             yaxis=dict(title="Width ($)",tickformat="$.4f" if ho else "$.2f"),
             barmode="overlay",bargap=0.2,legend=dict(orientation="h",y=1.1,x=0))
         st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("ci_width"))
@@ -1351,7 +1351,7 @@ def render_regional(result, agent, sel_reg):
         fig   = go.Figure()
         for r in data:
             sel  = sel_reg == r["region"]
-            clr  = "#00d4ff" if sel else ("#ff3d5a" if r["price"] > avg_p else "#1df5a0")
+            clr  = "#3a8fd5" if sel else ("#d83c3c" if r["price"] > avg_p else "#28b26c")
             delt = (r["price"] - avg_p) / avg_p * 100
             fig.add_trace(go.Scattergeo(
                 lat=[r["lat"]], lon=[r["lon"]],
@@ -1361,7 +1361,7 @@ def render_regional(result, agent, sel_reg):
                     color=clr,
                     opacity=1.0 if not sel_reg or sel else 0.3,
                     line=dict(width=2 if sel else 0.5,
-                              color="#fff" if sel else "rgba(255,255,255,.3)")),
+                              color="#fff" if sel else "rgba(255,255,255,.25)")),
                 text=[r["state"]],
                 textfont=dict(color="#fff", size=8),
                 textposition="middle center",
@@ -1373,11 +1373,11 @@ def render_regional(result, agent, sel_reg):
                     "%{customdata[3]}<extra></extra>"),
                 name=r["region"], showlegend=False))
         geo_cfg = dict(
-            bgcolor="#07090f", landcolor="#0d1220",
-            coastlinecolor="#1a2540", showlakes=False,
-            showrivers=False, framecolor="#1a2540",
-            showocean=True, oceancolor="#07090f",
-            showcountries=True, countrycolor="#1a2540")
+            bgcolor="#13191f", landcolor="#111820",
+            coastlinecolor="#263545", showlakes=False,
+            showrivers=False, framecolor="#263545",
+            showocean=True, oceancolor="#13191f",
+            showcountries=True, countrycolor="#263545")
         if scope:
             geo_cfg["scope"] = scope
         if proj:
@@ -1388,8 +1388,8 @@ def render_regional(result, agent, sel_reg):
             geo_cfg["projection"] = dict(scale=scale)
         fig.update_geos(**geo_cfg)
         fig.update_layout(
-            template=PT, paper_bgcolor="#07090f", height=380,
-            title=dict(text=title, font=dict(size=11, color="#c8d8ec")),
+            template=PT, paper_bgcolor="#13191f", height=380,
+            title=dict(text=title, font=dict(size=11, color="#d8e8f5")),
             margin=dict(l=0,r=0,t=36,b=0))
         return fig
 
@@ -1419,7 +1419,7 @@ def render_regional(result, agent, sel_reg):
                 [dict(r, label=r["region"]) for r in br_rp]
             )
             all_regions.sort(key=lambda x: x["price"])
-            bar_colors_cmp = ["#00d4ff" if r.get("country","US")=="US" else "#f5a623"
+            bar_colors_cmp = ["#3a8fd5" if r.get("country","US")=="US" else "#d99020"
                               for r in all_regions]
             fig_cmp.add_trace(go.Bar(
                 x=[r["label"] for r in all_regions],
@@ -1429,18 +1429,18 @@ def render_regional(result, agent, sel_reg):
                 textposition="outside",
                 hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>"))
             fig_cmp.add_hline(y=float(np.mean(us_prices_all)),
-                line=dict(color="#00d4ff", width=1, dash="dot"),
+                line=dict(color="#3a8fd5", width=1, dash="dot"),
                 annotation_text=f"US avg ${np.mean(us_prices_all):.4f}",
-                annotation_font=dict(color="#00d4ff", size=8))
+                annotation_font=dict(color="#3a8fd5", size=8))
             fig_cmp.add_hline(y=float(np.mean(br_prices_all)),
-                line=dict(color="#f5a623", width=1, dash="dot"),
+                line=dict(color="#d99020", width=1, dash="dot"),
                 annotation_text=f"BR avg ${np.mean(br_prices_all):.4f}",
-                annotation_font=dict(color="#f5a623", size=8))
+                annotation_font=dict(color="#d99020", size=8))
             fig_cmp.update_layout(
-                template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f",
+                template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f",
                 height=280,
                 title=dict(text="All Regions Ranked by Price — Blue = US, Orange = Brazil",
-                           font=dict(size=10, color="#c8d8ec")),
+                           font=dict(size=10, color="#d8e8f5")),
                 yaxis=dict(title="$/gal", tickformat="$.4f"),
                 showlegend=False, bargap=0.15,
                 margin=dict(l=40, r=10, t=36, b=60))
@@ -1498,15 +1498,15 @@ def render_eia_deep_dive(result):
         df_show = df_full.tail(52)
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_show["period"], y=df_show["value"],
-            mode="lines+markers", line=dict(color="#00d4ff", width=2),
-            marker=dict(size=4), fill="tozeroy", fillcolor="rgba(0,212,255,.07)",
+            mode="lines+markers", line=dict(color="#3a8fd5", width=2),
+            marker=dict(size=4), fill="tozeroy", fillcolor="rgba(58,143,213,.07)",
             hovertemplate="Week %{x}: %{y:,.0f} Mbbl<extra></extra>", name="Distillate Stocks"))
         if len(df_show) >= 4:
             avg_v = df_show["value"].mean()
-            fig.add_hline(y=avg_v, line=dict(color="#ffd060", width=1, dash="dash"),
-                annotation_text=f"1yr Avg {avg_v:,.0f}", annotation_font=dict(color="#ffd060", size=9))
-        fig.update_layout(template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-            title=dict(text="52-Week Inventory History (Mbbl)", font=dict(size=10, color="#c8d8ec")),
+            fig.add_hline(y=avg_v, line=dict(color="#c8a030", width=1, dash="dash"),
+                annotation_text=f"1yr Avg {avg_v:,.0f}", annotation_font=dict(color="#c8a030", size=9))
+        fig.update_layout(template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
+            title=dict(text="52-Week Inventory History (Mbbl)", font=dict(size=10, color="#d8e8f5")),
             xaxis=dict(title=""), yaxis=dict(title="Mbbl"), showlegend=False)
         st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia"))
     with c_b:
@@ -1515,14 +1515,14 @@ def render_eia_deep_dive(result):
             wow_vals  = [round(df_wow["value"].iloc[i] - df_wow["value"].iloc[i-1], 0)
                          for i in range(1, len(df_wow))]
             wow_dates = [df_wow["period"].iloc[i] for i in range(1, len(df_wow))]
-            wow_colors= ["#1df5a0" if w >= 0 else "#ff3d5a" for w in wow_vals]
+            wow_colors= ["#28b26c" if w >= 0 else "#d83c3c" for w in wow_vals]
             fig = go.Figure(go.Bar(
                 x=wow_dates, y=wow_vals, marker_color=wow_colors,
                 text=[f"{int(w):+,}" for w in wow_vals], textposition="outside",
                 hovertemplate="%{x}: %{y:+,.0f} Mbbl<extra></extra>"))
-            fig.add_hline(y=0, line=dict(color="#4a6080", width=1))
-            fig.update_layout(template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-                title=dict(text="WoW Change — Last 16 Weeks", font=dict(size=10, color="#c8d8ec")),
+            fig.add_hline(y=0, line=dict(color="#7090b0", width=1))
+            fig.update_layout(template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
+                title=dict(text="WoW Change — Last 16 Weeks", font=dict(size=10, color="#d8e8f5")),
                 xaxis=dict(tickangle=-45), yaxis=dict(title="Mbbl"), showlegend=False, bargap=0.15)
             st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia_wow"))
     sb = eia.get("seasonal_bands", [])
@@ -1534,20 +1534,20 @@ def render_eia_deep_dive(result):
         fig_s.add_trace(go.Scatter(
             x=pd.concat([df_sb["week"], df_sb["week"][::-1]]),
             y=pd.concat([df_sb["max"], df_sb["min"][::-1]]),
-            fill="toself", fillcolor="rgba(0,212,255,.07)",
+            fill="toself", fillcolor="rgba(58,143,213,.07)",
             line=dict(color="rgba(0,0,0,0)"), showlegend=True, name="5-Yr Range"))
         fig_s.add_trace(go.Scatter(
             x=df_sb["week"], y=df_sb["avg"],
-            mode="lines", line=dict(color="#00d4ff", width=1.5, dash="dot"),
+            mode="lines", line=dict(color="#3a8fd5", width=1.5, dash="dot"),
             name="5-Yr Avg"))
         if cy:
             df_cy = pd.DataFrame(cy)
             fig_s.add_trace(go.Scatter(
                 x=df_cy["week"], y=df_cy["value"],
-                mode="lines+markers", line=dict(color="#f5a623", width=2),
+                mode="lines+markers", line=dict(color="#d99020", width=2),
                 marker=dict(size=4), name="Current Year"))
-        fig_s.update_layout(template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-            title=dict(text="Seasonal Band vs Current Year (ISO Week)", font=dict(size=10, color="#c8d8ec")),
+        fig_s.update_layout(template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
+            title=dict(text="Seasonal Band vs Current Year (ISO Week)", font=dict(size=10, color="#d8e8f5")),
             xaxis=dict(title="ISO Week"), yaxis=dict(title="Mbbl"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig_s, use_container_width=True, config=_PCFG, key=_pc("eia_seasonal"))
@@ -1578,33 +1578,33 @@ def render_crack_spread(result, agent):
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(
             x=df_crack["date"], y=df_crack["crack"],
-            mode="lines", line=dict(color="#1df5a0", width=1.5),
-            fill="tozeroy", fillcolor="rgba(29,245,160,.07)",
+            mode="lines", line=dict(color="#28b26c", width=1.5),
+            fill="tozeroy", fillcolor="rgba(40,178,108,.07)",
             hovertemplate="%{x|%Y-%m-%d}: $%{y:.2f}<extra></extra>", name="Crack Spread"))
         if crack_vals:
             p25 = float(np.percentile(crack_vals, 25))
             p75 = float(np.percentile(crack_vals, 75))
-            fig1.add_hline(y=p75, line=dict(color="#ffd060", width=1, dash="dot"),
-                annotation_text=f"75th ${p75:.2f}", annotation_font=dict(color="#ffd060", size=9))
-            fig1.add_hline(y=p25, line=dict(color="#9d7aff", width=1, dash="dot"),
-                annotation_text=f"25th ${p25:.2f}", annotation_font=dict(color="#9d7aff", size=9))
-        fig1.update_layout(template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-            title=dict(text="Crack Spread History — HO 3:2:1 ($/bbl)", font=dict(size=10, color="#c8d8ec")),
+            fig1.add_hline(y=p75, line=dict(color="#c8a030", width=1, dash="dot"),
+                annotation_text=f"75th ${p75:.2f}", annotation_font=dict(color="#c8a030", size=9))
+            fig1.add_hline(y=p25, line=dict(color="#7868d0", width=1, dash="dot"),
+                annotation_text=f"25th ${p25:.2f}", annotation_font=dict(color="#7868d0", size=9))
+        fig1.update_layout(template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
+            title=dict(text="Crack Spread History — HO 3:2:1 ($/bbl)", font=dict(size=10, color="#d8e8f5")),
             xaxis=dict(title=""), yaxis=dict(title="$/bbl"), showlegend=False)
         st.plotly_chart(fig1, use_container_width=True, config=_PCFG, key=_pc("crack_ts"))
     with cb:
         if crack_vals:
             fig2 = go.Figure(go.Histogram(
                 x=crack_vals, nbinsx=20,
-                marker_color="rgba(29,245,160,.6)",
+                marker_color="rgba(40,178,108,.6)",
                 hovertemplate="$%{x:.2f}: %{y} obs<extra></extra>"))
             if current_crack:
                 fig2.add_vline(x=current_crack,
-                    line=dict(color="#ff3d5a", width=2, dash="dash"),
+                    line=dict(color="#d83c3c", width=2, dash="dash"),
                     annotation_text=f"Now ${current_crack:.2f}",
-                    annotation_font=dict(color="#ff3d5a", size=9))
-            fig2.update_layout(template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
-                title=dict(text="Crack Spread Distribution", font=dict(size=10, color="#c8d8ec")),
+                    annotation_font=dict(color="#d83c3c", size=9))
+            fig2.update_layout(template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
+                title=dict(text="Crack Spread Distribution", font=dict(size=10, color="#d8e8f5")),
                 xaxis=dict(title="$/bbl"), yaxis=dict(title="Observations"), showlegend=False)
             st.plotly_chart(fig2, use_container_width=True, config=_PCFG, key=_pc("crack_dist"))
     if ho and len(ch) >= 10:
@@ -1617,25 +1617,25 @@ def render_crack_spread(result, agent):
             fig3 = go.Figure()
             fig3.add_trace(go.Scatter(
                 x=crack_x, y=ho_prices, mode="markers",
-                marker=dict(color="#9d7aff", size=5, opacity=0.6),
+                marker=dict(color="#7868d0", size=5, opacity=0.6),
                 name="Historical",
                 hovertemplate="Crack $%{x:.2f} → HO $%{y:.4f}<extra></extra>"))
             fig3.add_trace(go.Scatter(
                 x=x_line, y=y_line, mode="lines",
-                line=dict(color="#ffd060", width=1.5, dash="dot"),
+                line=dict(color="#c8a030", width=1.5, dash="dot"),
                 name=f"Regression (slope={m:.4f})", hoverinfo="skip"))
             if current_crack and current_crack in crack_x:
                 cur_ho = md.get("HO", 0)
                 fig3.add_trace(go.Scatter(
                     x=[current_crack], y=[cur_ho], mode="markers",
-                    marker=dict(color="#ff3d5a", size=14, symbol="star",
-                                line=dict(width=2, color="#07090f")),
+                    marker=dict(color="#d83c3c", size=14, symbol="star",
+                                line=dict(width=2, color="#13191f")),
                     name="Today",
                     hovertemplate=f"Today: crack ${current_crack:.2f} → HO ${cur_ho:.4f}<extra></extra>"))
             fig3.update_layout(
-                template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=260,
+                template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=260,
                 title=dict(text="Crack Spread vs HO Price — Historical Relationship",
-                           font=dict(size=10, color="#c8d8ec")),
+                           font=dict(size=10, color="#d8e8f5")),
                 xaxis=dict(title="Crack Spread ($/bbl)"),
                 yaxis=dict(title="HO Price ($/gal)", tickformat="$.4f"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
@@ -1677,7 +1677,7 @@ def render_seasonal_pattern(result, agent):
               delta=f"{delta_vs_seasonal:+.2f}%",
               help="Positive = currently trading above seasonal norm")
     avgs_plot  = [a if a is not None else 0 for a in avgs]
-    bar_colors = ["#f5a623" if i+1==current_m else "#00d4ff" for i in range(12)]
+    bar_colors = ["#d99020" if i+1==current_m else "#3a8fd5" for i in range(12)]
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=month_abbr, y=avgs_plot, marker_color=bar_colors,
@@ -1685,18 +1685,18 @@ def render_seasonal_pattern(result, agent):
         textposition="outside",
         hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>", name="Monthly Avg"))
     fig.add_hline(y=overall_avg,
-        line=dict(color="#ffd060", width=1.5, dash="dash"),
+        line=dict(color="#c8a030", width=1.5, dash="dash"),
         annotation_text=f"Overall avg ${overall_avg:.4f}",
-        annotation_font=dict(color="#ffd060", size=9))
+        annotation_font=dict(color="#c8a030", size=9))
     if cur_ho:
         fig.add_hline(y=cur_ho,
-            line=dict(color="#ff3d5a", width=1.5, dash="dot"),
+            line=dict(color="#d83c3c", width=1.5, dash="dot"),
             annotation_text=f"Live ${cur_ho:.4f}",
-            annotation_font=dict(color="#ff3d5a", size=9))
+            annotation_font=dict(color="#d83c3c", size=9))
     fig.update_layout(
-        template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=300,
+        template=PT, paper_bgcolor="#13191f", plot_bgcolor="#13191f", height=300,
         title=dict(text="Seasonal Price Pattern — Monthly Historical Average",
-                   font=dict(size=11, color="#c8d8ec")),
+                   font=dict(size=11, color="#d8e8f5")),
         xaxis=dict(title="Month"),
         yaxis=dict(title="Avg Price ($/gal)", tickformat="$.4f"),
         showlegend=False)
@@ -1733,13 +1733,13 @@ def render_var_es(result, agent):
         pnl   = d.get("pnl_distribution",[])
         plbls = d.get("percentile_labels",[])
         if not pnl: continue
-        bar_colors=["#ff3d5a" if v<0 else "#1df5a0" for v in pnl]
+        bar_colors=["#d83c3c" if v<0 else "#28b26c" for v in pnl]
         fig=go.Figure(go.Bar(x=plbls,y=pnl,marker_color=bar_colors,
             text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in pnl],textposition="outside",
             hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
-        fig.add_hline(y=0,line=dict(color="#4a6080",width=1))
-        fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=240,
-            title=dict(text=f"P&L Percentile Distribution — {h}",font=dict(size=10,color="#c8d8ec")),
+        fig.add_hline(y=0,line=dict(color="#7090b0",width=1))
+        fig.update_layout(template=PT,paper_bgcolor="#13191f",plot_bgcolor="#13191f",height=240,
+            title=dict(text=f"P&L Percentile Distribution — {h}",font=dict(size=10,color="#d8e8f5")),
             yaxis=dict(title="P&L ($/gal)" if ho else "P&L ($/bbl)"),
             showlegend=False,bargap=0.15)
         (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
@@ -1749,10 +1749,10 @@ def render_var_es(result, agent):
 def render_sidebar():
     st.sidebar.markdown("""
     <div style="padding:16px 0 8px">
-      <div style="font-size:18px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif">
+      <div style="font-size:18px;font-weight:800;color:#d8e8f5;font-family:'Syne',sans-serif">
         Energy Intelligence
       </div>
-      <div style="font-size:9px;color:#4a6080;font-family:'JetBrains Mono',monospace;letter-spacing:1.2px;text-transform:uppercase">
+      <div style="font-size:9px;color:#7090b0;font-family:'JetBrains Mono',monospace;letter-spacing:1.2px;text-transform:uppercase">
         Commodity Probability Engine
       </div>
     </div>""", unsafe_allow_html=True)
@@ -1760,7 +1760,7 @@ def render_sidebar():
     auth_user = st.session_state.get("auth_user", "")
     if auth_user:
         st.sidebar.markdown(
-            f"<div style='font-size:10px;color:#4a6080;font-family:\'JetBrains Mono\',monospace;"
+            f"<div style='font-size:10px;color:#7090b0;font-family:\'JetBrains Mono\',monospace;"
             f"padding:4px 0 8px'>{auth_user}</div>",
             unsafe_allow_html=True
         )
@@ -1847,8 +1847,8 @@ def render_sidebar():
         render_admin_panel()
     st.sidebar.divider()
     st.sidebar.markdown("""
-    <div style="font-size:9px;color:#2a3850;font-family:'JetBrains Mono',monospace;line-height:1.8">
-    Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#00d4ff;text-decoration:none">lsaggioro@potonmail.com</a>
+    <div style="font-size:9px;color:#455870;font-family:'JetBrains Mono',monospace;line-height:1.8">
+    Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#3a8fd5;text-decoration:none">lsaggioro@potonmail.com</a>
     </div>""",unsafe_allow_html=True)
 
 
@@ -1866,14 +1866,14 @@ def render_dashboard():
     if not result:
         st.markdown("""
         <div style="text-align:center;padding:80px 0">
-          <div style="font-size:22px;font-weight:800;color:#c8d8ec;font-family:'Syne',sans-serif;margin-bottom:8px">
+          <div style="font-size:22px;font-weight:800;color:#d8e8f5;font-family:'Syne',sans-serif;margin-bottom:8px">
             Energy Intelligence Dashboard
           </div>
-          <div style="font-size:11px;color:#4a6080;font-family:'JetBrains Mono',monospace;letter-spacing:.8px">
+          <div style="font-size:11px;color:#7090b0;font-family:'JetBrains Mono',monospace;letter-spacing:.8px">
             DETERMINISTIC COMMODITY PROBABILITY ENGINE
           </div>
-          <div style="margin-top:32px;font-size:13px;color:#2a3850">
-            Click <strong style="color:#f5a623">Oil</strong> or <strong style="color:#00d4ff">HO</strong> in the sidebar to begin
+          <div style="margin-top:32px;font-size:13px;color:#455870">
+            Click <strong style="color:#d99020">Oil</strong> or <strong style="color:#3a8fd5">HO</strong> in the sidebar to begin
           </div>
         </div>""",unsafe_allow_html=True)
         return
