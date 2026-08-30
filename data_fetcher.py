@@ -37,16 +37,18 @@ TICKER_MAP = {
     "RBOB":  ("RB=F",      "RB=F",      None          ),
     "DXY":   ("DX-Y.NYB",  "DX-Y.NYB",  "DTWEXBGS"    ),
     "VIX":   ("^VIX",      "%5EVIX",    "VIXCLS"      ),
+    "OVX":   ("^OVX",      "%5EOVX",    None          ),   # CBOE Crude Oil ETF Vol Index
 }
 
 # Sanity ranges — reject obviously wrong scraped values
 _SANE = {
-    "HO":    (1.0,  15.0),
+    "HO":    (1.0,   15.0),
     "WTI":   (30.0, 250.0),
     "Brent": (30.0, 260.0),
-    "RBOB":  (0.5,  15.0),
+    "RBOB":  (0.5,   15.0),
     "DXY":   (70.0, 150.0),
     "VIX":   (8.0,  100.0),
+    "OVX":   (5.0,  150.0),   # OVX typically ranges 20–80 in normal markets
 }
 
 _HEADERS = {
