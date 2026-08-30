@@ -13,6 +13,13 @@ Changes v3.1:
          P(each HO futures contract touches a user-specified KO price before expiry)
   - Add: Section 05B — Probability at Expiration Table (Table 2)
          Lognormal settlement distribution across 13 monthly contracts
+Changes v3.2:
+  - 02 Price History: title now shows HO1 — Front Contract with dynamic ticker (e.g. HOU26)
+  - 01 Snapshot + 02 Price History: 30-second live spot price refresh via streamlit-autorefresh
+  - 04 Volatility: added Rolling 30-day realized vol + OVX Implied Volatility overlay
+  - Section order restructured: Snapshot→PriceHistory→ProbDist→KOProb→Volatility→
+      CrackSpread→Inventory→Seasonal→VaR→Scenario→Map
+  - KO section: interactive inputs drive all metrics on the fly (already live)
 """
 import streamlit as st
 import numpy as np
@@ -26,6 +33,12 @@ import os
 import data_fetcher as _df
 import json
 import hashlib
+# 30-second auto-refresh for live market data (Snapshot + Price History)
+try:
+    from streamlit_autorefresh import st_autorefresh as _st_autorefresh
+    _AUTOREFRESH_OK = True
+except ImportError:
+    _AUTOREFRESH_OK = False
 # Load .env if present (local dev)
 try:
     from dotenv import load_dotenv
@@ -474,6 +487,38 @@ def run_ho_agent():
     msgs=[]
     result=ho.run(send=msgs.append)
     return result, msgs
+
+# ── LIVE SPOT PRICE FETCH (cached 30s — fast, no history) ────────────────────
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_live_prices():
+    """
+    Fetch only the latest spot prices — runs in <2s and is cached for 30 seconds.
+    Used to overlay fresh quotes on the Snapshot and Price History sections without
+    re-running the full agent (which fetches a year of history).
+    Returns a dict {name: price} with None for any failed tickers.
+    """
+    names = ["HO", "WTI", "RBOB", "VIX"]
+    prices = {}
+    for name in names:
+        try:
+            price, _dt, _src = _df.fetch_price(name, send=lambda _: None)
+            prices[name] = price
+        except Exception:
+            prices[name] = None
+    # Crack spread: HO ($/gal) × 42 gal/bbl − WTI ($/bbl)
+    ho_p  = prices.get("HO")
+    wti_p = prices.get("WTI")
+    if ho_p is not None and wti_p is not None:
+        prices["crack_spread"] = round(ho_p * 42 - wti_p, 2)
+    else:
+        prices["crack_spread"] = None
+    # OVX — CBOE Crude Oil ETF Volatility Index (energy implied vol proxy)
+    try:
+        ovx_price, _dt, _src = _df.fetch_price("OVX", send=lambda _: None)
+        prices["OVX"] = ovx_price
+    except Exception:
+        prices["OVX"] = None
+    return prices
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def section(num, title, hint=""):
     st.markdown(f"""
@@ -497,35 +542,91 @@ def interp_line(start,end,n):
 
 def _pc(key): return f"chart_{key}"
 
+def _get_front_contract_ticker() -> str:
+    """
+    Return the CME HO front-month contract ticker (e.g. 'HOU26').
+    HO futures expire on the last business day of the month PRIOR to delivery,
+    so the front delivery month is the first month whose prior-month expiry
+    falls on or after today.
+    CME month codes: F G H J K M N Q U V X Z (Jan–Dec)
+    """
+    import calendar as _cal
+    _MONTH_LETTERS = {1:'F',2:'G',3:'H',4:'J',5:'K',6:'M',
+                      7:'N',8:'Q',9:'U',10:'V',11:'X',12:'Z'}
+    today = datetime.date.today()
+    year, month = today.year, today.month
+    for _ in range(14):                          # scan up to 14 months forward
+        # expiry = last business day of (month - 1)
+        if month == 1:
+            exp_y, exp_m = year - 1, 12
+        else:
+            exp_y, exp_m = year, month - 1
+        last_day = _cal.monthrange(exp_y, exp_m)[1]
+        exp_d = datetime.date(exp_y, exp_m, last_day)
+        while exp_d.weekday() >= 5:              # walk back to Friday if weekend
+            exp_d -= datetime.timedelta(days=1)
+        if exp_d >= today:
+            return f"HO{_MONTH_LETTERS[month]}{str(year)[-2:]}"
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return "HO1"                                 # fallback — should never reach here
+
 # ── ① SNAPSHOT ────────────────────────────────────────────────────────────────
 def render_snapshot(result, agent):
     section("01", "SNAPSHOT")
-    ho = agent=="ho"
-    md = result.get("market_data",{})
-    f  = result.get("forecast",{})
-    ci = result.get("ci_bands",{})
-    ci1m = ci.get("1M",{})
+    ho   = agent == "ho"
+    md   = result.get("market_data", {})
+    f    = result.get("forecast", {})
+    ci   = result.get("ci_bands", {})
+    ci1m = ci.get("1M", {})
+
+    # Overlay live spot prices from the 30-second TTL cache where available
+    live = fetch_live_prices()
+
     if ho:
+        ho_disp  = live.get("HO")  or md.get("HO",  0)
+        wti_disp = live.get("WTI") or md.get("WTI", 0)
+        rb_disp  = live.get("RBOB") or md.get("RBOB", 0)
+        cs_disp  = live.get("crack_spread") or md.get("crack_spread", 0)
+        vix_disp = md.get("VIX", 0)   # VIX from cached agent result
+
+        # Deltas vs cached values (shows movement since last full run)
+        ho_delta  = round(ho_disp  - md.get("HO",  ho_disp),  4) if live.get("HO")  else None
+        wti_delta = round(wti_disp - md.get("WTI", wti_disp), 2) if live.get("WTI") else None
+        rb_delta  = round(rb_disp  - md.get("RBOB",rb_disp),  4) if live.get("RBOB") else None
+
         cols = st.columns(5)
+        _src_tag = " ⟳" if any(live.get(k) for k in ("HO","WTI","RBOB")) else ""
         metrics = [
-            ("HO Price",          f"${md.get('HO',0):.4f}",       "$/gal"),
-            ("WTI",               f"${md.get('WTI',0):.2f}",       "$/bbl"),
-            ("RBOB",              f"${md.get('RBOB',0):.4f}",      "$/gal"),
-            ("Crack Spread",      f"${md.get('crack_spread',0):.2f}","$/bbl"),
-            ("Volatility (VIX)",  f"{md.get('VIX',0):.1f}",        "index"),
+            ("HO Price" + _src_tag, f"${ho_disp:.4f}",           "$/gal",
+             f"+${ho_delta:.4f}"  if ho_delta and ho_delta >= 0
+             else f"${ho_delta:.4f}" if ho_delta else None),
+            ("WTI" + _src_tag,       f"${wti_disp:.2f}",         "$/bbl",
+             f"+${wti_delta:.2f}" if wti_delta and wti_delta >= 0
+             else f"${wti_delta:.2f}" if wti_delta else None),
+            ("RBOB" + _src_tag,      f"${rb_disp:.4f}",          "$/gal",
+             f"+${rb_delta:.4f}"  if rb_delta  and rb_delta  >= 0
+             else f"${rb_delta:.4f}"  if rb_delta  else None),
+            ("Crack Spread",         f"${cs_disp:.2f}",           "$/bbl", None),
+            ("Volatility (VIX)",     f"{vix_disp:.1f}",           "index", None),
         ]
+        for col, (label, val, sub, delta) in zip(cols, metrics):
+            col.metric(label, val, delta, help=sub)
     else:
         cols = st.columns(5)
         metrics = [
-            ("WTI Live",      f"${f.get('current_wti',0):.2f}",         "per barrel"),
-            ("Brent",         f"${result.get('brent',0):.2f}",           "per barrel"),
+            ("WTI Live",      f"${f.get('current_wti',0):.2f}",                        "per barrel"),
+            ("Brent",         f"${result.get('brent',0):.2f}",                          "per barrel"),
             ("1-Wk Forecast", f"${f.get('forecast_low',0)}–${f.get('forecast_high',0)}","90% CI"),
-            ("Ann. Vol",      f"{f.get('annualised_vol',0):.1f}%",       "historical sigma"),
-            ("Direction",     f.get('direction','—'),                    "model signal"),
+            ("Ann. Vol",      f"{f.get('annualised_vol',0):.1f}%",                      "historical sigma"),
+            ("Direction",     f.get("direction","—"),                                   "model signal"),
         ]
-    for col,(label,val,sub) in zip(cols,metrics):
-        col.metric(label,val,sub)
-    ci_width = round((ci1m.get("ci95",[0,0])[1]-ci1m.get("ci95",[0,0])[0]),4 if ho else 2)
+        for col, (label, val, sub) in zip(cols, metrics):
+            col.metric(label, val, sub)
+
+    ci_width     = round((ci1m.get("ci95",[0,0])[1] - ci1m.get("ci95",[0,0])[0]), 4 if ho else 2)
     regime_label = result.get("regime","—") if ho else f.get("direction","—")
     st.caption(f"1M 95% CI range: **${ci_width}** · Regime: **{regime_label}**")
 
@@ -543,7 +644,9 @@ def render_price_history(result, agent):
       - "1 Hour" → 2d lookback / 13 bars   (same session, narrower tick fmt)
       - Chart height raised from 340 → 480
     """
-    section("02", "PRICE HISTORY", "Short-term periods use live intraday fetch")
+    front_ticker = _get_front_contract_ticker()
+    section("02", "PRICE HISTORY",
+            f"HO1 Front Contract: {front_ticker} · Short-term periods use live intraday fetch")
     ho          = agent == "ho"
     daily_hist  = result.get("history", [])
     ticker_name = "HO" if ho else "WTI"
@@ -631,7 +734,8 @@ def render_price_history(result, agent):
     fig.update_layout(
         template=PT, paper_bgcolor="#07090f", plot_bgcolor="#07090f", height=520,
         title=dict(
-            text=f"{'Heating Oil' if ho else 'WTI Crude'} — Price History ({period_s})",
+            text=(f"HO1 — {front_ticker} — Price History ({period_s})"
+                  if ho else f"WTI Crude — Price History ({period_s})"),
             font=dict(size=12, color="#c8d8ec")),
         xaxis=xaxis_cfg,
         yaxis=dict(tickformat="$.4f" if ho else "$.2f", range=yrange),
@@ -743,9 +847,10 @@ def _render_prob_table(result, agent, sel_h, sel_bin):
         unsafe_allow_html=True)
 
 
-# ── ④ VOLATILITY (dynamic y-axis + period filter) ────────────────────────────
+# ── ⑤ VOLATILITY (dynamic y-axis + period filter) ────────────────────────────
 def render_volatility(result):
-    section("04","VOLATILITY","Rolling 10-day annualised vol — line chart")
+    section("05","VOLATILITY",
+            "Rolling 10-day & 30-day annualised vol · OVX implied vol proxy (live)")
     vh = result.get("vol_heatmap",[])
     if not vh:
         st.info("Insufficient history for volatility (need > 11 trading days)")
@@ -761,25 +866,84 @@ def render_volatility(result):
     cutoff = pd.Timestamp.today() - pd.Timedelta(days=period_days[period])
     df     = df_full[df_full["date"]>=cutoff].copy()
     if df.empty: df = df_full.tail(10).copy()
-    v_max   = float(df["vol"].max())
-    v_min   = float(df["vol"].min())
-    y_upper = round(v_max * 1.05, 2)
-    y_lower = round(v_min * 0.85, 2)
+
+    # ── Compute Rolling 30-day realised vol from daily history ────────────────
+    hist = result.get("history", [])
+    roll30_dates, roll30_vals = [], []
+    if len(hist) >= 32:
+        h_df = pd.DataFrame(hist)
+        h_df["date"]  = pd.to_datetime(h_df["date"])
+        h_df["price"] = h_df["price"].astype(float)
+        h_df = h_df.sort_values("date").reset_index(drop=True)
+        h_df["ret"]   = np.log(h_df["price"] / h_df["price"].shift(1))
+        h_df["vol30"] = h_df["ret"].rolling(30).std() * np.sqrt(252) * 100
+        h_df = h_df.dropna(subset=["vol30"])
+        h_df = h_df[h_df["date"] >= cutoff]
+        roll30_dates = h_df["date"].tolist()
+        roll30_vals  = h_df["vol30"].round(2).tolist()
+
+    # ── OVX live implied vol proxy ─────────────────────────────────────────────
+    live     = fetch_live_prices()
+    ovx_val  = live.get("OVX")   # float or None
+
+    # Dynamic y-axis across all series
+    all_vals = list(df["vol"])
+    if roll30_vals: all_vals += roll30_vals
+    if ovx_val:     all_vals.append(ovx_val)
+    v_max   = float(max(all_vals)) if all_vals else 30.0
+    v_min   = float(min(all_vals)) if all_vals else 0.0
+    y_upper = round(v_max * 1.10, 2)
+    y_lower = round(max(0, v_min * 0.80), 2)
     avg     = float(df["vol"].mean())
+
+    line_color = "#f5a623" if result.get("agent") == "ho" else "#00d4ff"
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines+markers",
-        line=dict(color="#f5a623" if result.get("agent")=="ho" else "#00d4ff",width=2),
-        marker=dict(size=4),name="Rolling 10d Ann. Vol",
-        hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra></extra>"))
+
+    # Rolling 10-day
+    fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines",
+        line=dict(color=line_color,width=2),
+        name="Rolling 10d Ann. Vol",
+        hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>10d RVol</extra>"))
+
+    # Rolling 30-day
+    if roll30_vals:
+        fig.add_trace(go.Scatter(x=roll30_dates,y=roll30_vals,mode="lines",
+            line=dict(color="#9d7aff",width=1.8,dash="dot"),
+            name="Rolling 30d Ann. Vol",
+            hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>30d RVol</extra>"))
+
+    # Average reference line
     fig.add_hline(y=avg,line=dict(color="#ffd060",width=1,dash="dash"),
-        annotation_text=f"Avg {avg:.1f}%",annotation_font=dict(color="#ffd060",size=9))
-    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=280,
-        title=dict(text=f"Rolling 10-Day Annualised Volatility — {period}",
+        annotation_text=f"10d Avg {avg:.1f}%",
+        annotation_font=dict(color="#ffd060",size=9))
+
+    # OVX implied vol proxy — horizontal band
+    if ovx_val:
+        fig.add_hline(y=ovx_val,line=dict(color="#1df5a0",width=1.5,dash="dashdot"),
+            annotation_text=f"OVX IV Proxy {ovx_val:.1f}%",
+            annotation_font=dict(color="#1df5a0",size=9))
+
+    fig.update_layout(template=PT,paper_bgcolor="#07090f",plot_bgcolor="#07090f",height=320,
+        title=dict(text=f"Realised Volatility (10d / 30d) + OVX Implied Vol Proxy — {period}",
                    font=dict(size=11,color="#c8d8ec")),
         xaxis=dict(title="",type="date"),
         yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper]),
-        showlegend=False)
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1),
+        showlegend=True)
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
+
+    # ── OVX metric card ───────────────────────────────────────────────────────
+    if ovx_val:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("OVX (IV Proxy)", f"{ovx_val:.1f}", help="CBOE Crude Oil ETF Volatility Index — live via yfinance")
+        c2.metric("10d Realised Vol", f"{avg:.1f}%")
+        if roll30_vals:
+            avg30 = round(float(np.mean(roll30_vals)), 1)
+            c3.metric("30d Realised Vol", f"{avg30:.1f}%")
+        st.caption(
+            "**OVX** (CBOE Crude Oil ETF Volatility Index) is used as an energy implied volatility proxy. "
+            "HO-specific options IV requires CME DataMine or Bloomberg subscription."
+        )
 
 
 # ── ⑤ KO PROBABILITY TABLE ───────────────────────────────────────────────────
@@ -792,7 +956,7 @@ def render_ko_table(result, agent):
     """
     if agent != "ho":
         return
-    section("05", "KO PROBABILITY BY CONTRACT",
+    section("04", "KO PROBABILITY BY CONTRACT",
             "P(price touches KO barrier at any point before expiry)")
 
     contracts = result.get("ho_contracts", [])
@@ -916,7 +1080,7 @@ def render_expiry_distribution_table(result, agent):
     """
     if agent != "ho":
         return
-    section("05B", "PROBABILITY AT EXPIRATION (12-MONTH FORWARD)",
+    section("04B", "PROBABILITY AT EXPIRATION (12-MONTH FORWARD)",
             "Lognormal settlement distribution by contract — predefined or custom ranges")
 
     contracts = result.get("ho_contracts", [])
@@ -1071,7 +1235,7 @@ def render_expiry_distribution_table(result, agent):
 
 # ── ⑥ SCENARIO ────────────────────────────────────────────────────────────────
 def render_scenario(result, agent, sel_scen):
-    section("06","SCENARIO SIMULATION","Dynamic signals: crack spread · VIX · EIA · seasonal")
+    section("10","SCENARIO SIMULATION","Dynamic signals: crack spread · VIX · EIA · seasonal")
     sp   = result.get("scenario_paths",{})
     ho   = agent=="ho"
     md   = result.get("market_data",{})
@@ -1176,7 +1340,7 @@ def render_scenario(result, agent, sel_scen):
 
 # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────────
 def render_regional(result, agent, sel_reg):
-    section("07","REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
+    section("11","REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
     rp    = result.get("regional_prices",[])
     br_rp = result.get("brazil_regional_prices",[])
     ho    = agent=="ho"
@@ -1292,7 +1456,7 @@ def render_regional(result, agent, sel_reg):
 
 # ── ⑧ EIA INVENTORY DEEP DIVE ────────────────────────────────────────────────
 def render_eia_deep_dive(result):
-    section("08","EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
+    section("07","EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
     eia  = result.get("eia_data",{})
     hist = eia.get("history",[])
     c1,c2,c3 = st.columns(3)
@@ -1391,7 +1555,7 @@ def render_eia_deep_dive(result):
 
 # ── ⑨ CRACK SPREAD ANALYTICS ─────────────────────────────────────────────────
 def render_crack_spread(result, agent):
-    section("09","CRACK SPREAD ANALYTICS","Time series · percentile bands · distribution · scatter")
+    section("06","CRACK SPREAD ANALYTICS","Time series · percentile bands · distribution · scatter")
     ho = agent=="ho"
     ch = result.get("crack_history",[])
     md = result.get("market_data",{})
@@ -1484,7 +1648,7 @@ def render_crack_spread(result, agent):
 def render_seasonal_pattern(result, agent):
     if agent != "ho":
         return
-    section("10","SEASONAL PATTERN ANALYSIS","Monthly average vs current — cycle positioning")
+    section("08","SEASONAL PATTERN ANALYSIS","Monthly average vs current — cycle positioning")
     history = result.get("history", [])
     if len(history) < 90:
         st.info("Seasonal pattern needs at least 90 days of history.")
@@ -1545,7 +1709,7 @@ def render_seasonal_pattern(result, agent):
 
 # ── ⑪ VALUE AT RISK & EXPECTED SHORTFALL ─────────────────────────────────────
 def render_var_es(result, agent):
-    section("11","VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
+    section("09","VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
     ho       = agent=="ho"
     var_data = result.get("var_es",{})
     if not var_data:
@@ -1689,6 +1853,10 @@ def render_sidebar():
 
 
 def render_dashboard():
+    # ── 30-second live-price auto-refresh (non-blocking) ──────────────────────
+    if _AUTOREFRESH_OK:
+        _st_autorefresh(interval=30_000, limit=None, key="mkt_live_refresh")
+
     result  = st.session_state.result
     agent   = st.session_state.agent
     sel_h   = st.session_state.sel_horizon
@@ -1709,20 +1877,25 @@ def render_dashboard():
           </div>
         </div>""",unsafe_allow_html=True)
         return
-    ho = agent=="ho"
+    ho = agent == "ho"
+    # Section order (v3.2):
+    # 01 Snapshot · 02 Price History · 03 Prob Distribution
+    # 04 KO Prob · 04B Expiry Dist · 05 Volatility · 06 Crack Spread
+    # 07 EIA Inventory · 08 Seasonal · 09 VaR · 10 Scenario · 11 Regional Map
     render_snapshot(result, agent)
     render_price_history(result, agent)
     render_prob_dist(result, agent, sel_h, sel_bin)
-    render_volatility(result)
-    render_scenario(result, agent, sel_scen)
-    render_regional(result, agent, sel_reg)
     if ho:
         render_ko_table(result, agent)
         render_expiry_distribution_table(result, agent)
-        render_eia_deep_dive(result)
+    render_volatility(result)
+    if ho:
         render_crack_spread(result, agent)
+        render_eia_deep_dive(result)
         render_seasonal_pattern(result, agent)
         render_var_es(result, agent)
+    render_scenario(result, agent, sel_scen)
+    render_regional(result, agent, sel_reg)
     section("--","MARKET SUMMARY")
     with st.expander("View full summary",expanded=False):
         st.code(result.get("summary",""),language=None)
