@@ -2,6 +2,7 @@
 # Streamlit Cloud reads this file automatically.
 
 streamlit
+streamlit-autorefresh  # 30-second live price auto-refresh
 numpy
 pandas
 plotly
