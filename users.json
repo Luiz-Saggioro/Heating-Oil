@@ -50,6 +50,16 @@
       "totp_secret": "Q62MZQG2HT6IN6U7WDJW7BPHUPFKMQMY",
       "totp_enabled": false,
       "created_at": "2026-09-03"
+    },
+    {
+      "login": "Kaleb Prince",
+      "password_hash": "1962c344ad4bde1822f16c72ba1198064dc6baf757fee2bcd020d7fdffbee680",
+      "salt": "94f9ccfb992c7074ddd1c8b27c8e0dd3",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "JKZO6C3GYQHXOSEITBIUKR5XIVKOGHQQ",
+      "totp_enabled": false,
+      "created_at": "2026-09-03"
     }
   ]
 }
