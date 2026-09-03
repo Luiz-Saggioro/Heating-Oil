@@ -30,6 +30,26 @@
       "totp_secret": "2P53BRR7QLFZIPMBKEIGQVB2E3CH2OAN",
       "totp_enabled": false,
       "created_at": "2026-07-24"
+    },
+    {
+      "login": "Timothy Vince",
+      "password_hash": "e162248028e1c3626ec67f6316725393e9023cfc04f66a975f0b18536920ec7d",
+      "salt": "c2632ffa1d00842c49c3232874dbc8da",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "3G2DKPDMTA7GDRJXXKVLCXC4DYKL4ZYN",
+      "totp_enabled": false,
+      "created_at": "2026-09-03"
+    },
+    {
+      "login": "Thiago Vetter",
+      "password_hash": "31da729e5761e5c90a617e59a726c45cffb07d15c81dd2eebe27586094980ec0",
+      "salt": "dac005206a1a876ca31ea0bff9eada80",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "Q62MZQG2HT6IN6U7WDJW7BPHUPFKMQMY",
+      "totp_enabled": false,
+      "created_at": "2026-09-03"
     }
   ]
 }
