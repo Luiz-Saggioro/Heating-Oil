@@ -16,6 +16,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import data_fetcher as _df
+import config as cfg
+import vol_engine as _ve
+import scenario_engine as _se
 
 try:
     import requests as _requests
@@ -38,28 +41,69 @@ OUTPUT_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output"
 HORIZONS     = ["1M", "3M", "6M", "9M", "12M"]
 HORIZON_DAYS = {"1M": 21, "3M": 63, "6M": 126, "9M": 189, "12M": 252}
 
-HO_PRICE_BINS = [
-    "<1.80", "1.80-2.20", "2.20-2.60", "2.60-3.00",
-    "3.00-3.30", "3.30-3.69", "3.69-4.10", "4.10-4.60",
-    "4.60-5.10", "5.10-5.70", "5.70-6.25", ">6.25",
-]
-BIN_EDGES = [-np.inf, 1.80, 2.20, 2.60, 3.00,
-              3.30, 3.69, 4.10, 4.60, 5.10, 5.70, 6.25, np.inf]
+# Price bins are no longer hard-coded: the ensemble runs on a fine $/gal grid
+# (config PROB_GRID_STEP) centred on spot, and display bins are derived from
+# spot + volatility (see make_display_edges). "Nice" steps keep labels readable.
+NICE_STEPS = [0.01, 0.02, 0.025, 0.05, 0.10, 0.20, 0.25, 0.50, 1.00]
 
-CUSTOM_BANDS = [
-    ("P(3.30-3.69)",  3.30,   3.69    ),
-    ("P(>5.10)",      5.10,   np.inf  ),
-    ("P(>6.25)",      6.25,   np.inf  ),
-    ("P(<3.00)",     -np.inf, 3.00    ),
-    ("P(<1.80)",     -np.inf, 1.80    ),
-]
 
-# Month abbreviations for contract labeling
-MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+def build_fine_edges(spot, sigma_daily):
+    """Finite interior edges of the fine grid: spot * exp(+/- 6 sigma of 12M)."""
+    step = cfg.get("PROB_GRID_STEP")
+    span = 6 * max(sigma_daily, 1e-4) * np.sqrt(HORIZON_DAYS["12M"])
+    lo = max(step, np.floor(spot * np.exp(-span) / step) * step)
+    hi = np.ceil(spot * np.exp(span) / step) * step
+    return np.round(np.arange(lo, hi + step / 2, step), 4)
 
-# Default display bins for expiry distribution table (Table 2)
-DISPLAY_BIN_EDGES  = [-np.inf, 2.00, 2.50, 3.00, 3.50, 4.00, 4.50, np.inf]
-DISPLAY_BIN_LABELS = ["<$2.00","$2.00-2.50","$2.50-3.00","$3.00-3.50","$3.50-4.00","$4.00-4.50",">$4.50"]
+
+def _nice(x):
+    return min(NICE_STEPS, key=lambda s: abs(s - x))
+
+
+def make_display_edges(spot, sigma_daily, horizon_days, n_sigma=None, n_bins=None):
+    """Display bins: spot +/- n_sigma * sigma_horizon, split into ~n_bins nice steps."""
+    n_sigma = n_sigma or cfg.get("PROB_TABLE_SIGMA_RANGE")
+    n_bins = n_bins or cfg.get("PROB_TABLE_BINS")
+    s = max(sigma_daily, 1e-4) * np.sqrt(horizon_days)
+    lo, hi = spot * np.exp(-n_sigma * s), spot * np.exp(n_sigma * s)
+    step = _nice((hi - lo) / n_bins)
+    lo = np.floor(lo / step) * step
+    hi = np.ceil(hi / step) * step
+    return [round(float(e), 4) for e in np.arange(max(step, lo), hi + step / 2, step)]
+
+
+def edge_labels(edges, dec=2):
+    f = lambda v: f"${v:.{dec}f}"
+    return ([f"<{f(edges[0])}"] + [f"{f(a)}-{f(b)[1:]}" for a, b in zip(edges[:-1], edges[1:])]
+            + [f">{f(edges[-1])}"])
+
+
+# ── Fine-grid distribution helpers (grid = {"edges": [...], "probs": [...]}) ──
+# probs has len(edges)+1 entries: [P(<e0), P(e0-e1), ..., P(>e_n)]
+def grid_cdf(g, x):
+    e = np.asarray(g["edges"]); c = np.cumsum(g["probs"])
+    if x <= e[0]:
+        return float(c[0] * x / e[0]) if e[0] > 0 else 0.0
+    if x >= e[-1]:
+        return float(min(1.0, c[-2] + (1 - c[-2]) * (1 - np.exp(-(x - e[-1]) / max(e[-1] * 0.05, 1e-6)))))
+    return float(np.interp(x, e, c[:-1]))
+
+
+def grid_quantile(g, u):
+    e = np.asarray(g["edges"]); c = np.cumsum(g["probs"])[:-1]
+    return float(np.interp(u, c, e))
+
+
+def grid_mean(g):
+    e = np.asarray(g["edges"]); p = np.asarray(g["probs"])
+    step = e[1] - e[0] if len(e) > 1 else 0.01
+    mids = np.concatenate([[max(e[0] - step / 2, 0)], (e[:-1] + e[1:]) / 2, [e[-1] + step / 2]])
+    return float((mids * p).sum() / (p.sum() or 1))
+
+
+def grid_bin_probs(g, edges):
+    c = np.array([grid_cdf(g, x) for x in edges])
+    return list(np.diff(np.concatenate([[0.0], c, [1.0]])).clip(0, 1))
 
 
 def _eia_key():
@@ -100,38 +144,37 @@ def _eia_key():
 
 # ── Probability Models ────────────────────────────────────────────────────────
 
-def lognormal_probs(current, returns, horizon_days):
+def _full(edges):
+    return np.concatenate([[-np.inf], np.asarray(edges, dtype=float), [np.inf]])
+
+
+def _probs_from_logcdf(edges, cdf):
+    """Vectorised bin probabilities from a CDF over log-price."""
+    e = np.asarray(edges, dtype=float)
+    c = np.concatenate([[0.0], cdf(np.log(np.maximum(e, 1e-9))), [1.0]])
+    p = np.diff(c).clip(0, None)
+    return list(p / (p.sum() or 1.0))
+
+
+def lognormal_probs(current, returns, horizon_days, edges):
     from scipy.stats import norm
     r = np.array(returns) if len(returns) > 5 else np.random.normal(0, 0.015, 60)
     sig = min(float(np.std(r, ddof=1)) or 0.015, 0.80/np.sqrt(252))
     lm  = np.log(current) - 0.5*sig**2*horizon_days
     ls  = sig*np.sqrt(horizon_days)
-    probs = []
-    for i in range(len(BIN_EDGES)-1):
-        lo, hi = BIN_EDGES[i], BIN_EDGES[i+1]
-        p_lo = norm.cdf(np.log(max(lo,1e-6)), loc=lm, scale=ls) if lo>-np.inf else 0.0
-        p_hi = norm.cdf(np.log(hi),           loc=lm, scale=ls) if hi<np.inf  else 1.0
-        probs.append(max(0.0, p_hi-p_lo))
-    t = sum(probs) or 1.0
-    return [p/t for p in probs]
+    return _probs_from_logcdf(edges, lambda x: norm.cdf(x, loc=lm, scale=ls))
 
 
-def bootstrap_probs(current, returns, horizon_days, n=3000):
+def bootstrap_probs(current, returns, horizon_days, edges, n=3000):
     r = np.array(returns) if len(returns)>5 else np.random.normal(0,0.015,60)
     r = r - np.mean(r)
-    sims  = np.exp(np.sum(np.random.choice(r, size=(n, horizon_days), replace=True), axis=1))
-    final = current * sims
-    probs = []
-    for i in range(len(BIN_EDGES)-1):
-        lo, hi = BIN_EDGES[i], BIN_EDGES[i+1]
-        mask = ((final>=lo) if lo>-np.inf else np.ones(n,bool)) & \
-               ((final<hi)  if hi<np.inf  else np.ones(n,bool))
-        probs.append(float(mask.sum())/n)
-    t = sum(probs) or 1.0
-    return [p/t for p in probs]
+    final = current * np.exp(np.sum(np.random.choice(r, size=(n, horizon_days), replace=True), axis=1))
+    counts = np.bincount(np.searchsorted(np.asarray(edges), final, side="right"),
+                         minlength=len(edges)+1)
+    return list(counts / counts.sum())
 
 
-def mean_reversion_probs(current, returns, horizon_days, long_run_mean=None):
+def mean_reversion_probs(current, returns, horizon_days, edges, long_run_mean=None):
     from scipy.stats import norm
     r = np.array(returns) if len(returns)>5 else np.random.normal(0,0.015,60)
     sig_d = min(float(np.std(r,ddof=1)) or 0.015, 0.80/np.sqrt(252))
@@ -143,39 +186,13 @@ def mean_reversion_probs(current, returns, horizon_days, long_run_mean=None):
     fwd_mean = np.log(long_run_mean)+(np.log(current)-np.log(long_run_mean))*exp_kT
     fwd_var  = (sig_a**2/(2.0*kappa))*(1.0-exp_kT**2)
     fwd_sig  = np.sqrt(max(fwd_var,1e-8))
-    probs = []
-    for i in range(len(BIN_EDGES)-1):
-        lo, hi = BIN_EDGES[i], BIN_EDGES[i+1]
-        p_lo = norm.cdf(np.log(max(lo,1e-6)), loc=fwd_mean, scale=fwd_sig) if lo>-np.inf else 0.0
-        p_hi = norm.cdf(np.log(hi),           loc=fwd_mean, scale=fwd_sig) if hi<np.inf  else 1.0
-        probs.append(max(0.0, p_hi-p_lo))
-    t = sum(probs) or 1.0
-    return [p/t for p in probs]
+    return _probs_from_logcdf(edges, lambda x: norm.cdf(x, loc=fwd_mean, scale=fwd_sig))
 
 
 def ensemble3(p1, p2, p3, w=(0.40, 0.35, 0.25)):
     combined = [w[0]*a+w[1]*b+w[2]*c for a,b,c in zip(p1,p2,p3)]
     t = sum(combined) or 1.0
     return [p/t for p in combined]
-
-
-def band_prob(ens, lo, hi):
-    prob = 0.0
-    for i in range(len(BIN_EDGES)-1):
-        b_lo, b_hi = BIN_EDGES[i], BIN_EDGES[i+1]
-        if min(b_hi,hi) > max(b_lo,lo):
-            prob += ens[i]
-    return round(prob, 4)
-
-
-def compute_ev_by_horizon(prob_table):
-    bin_mids = [1.60,2.00,2.40,2.80,3.15,3.495,3.895,4.35,4.85,5.40,5.975,6.75]
-    ev = {}
-    for h in HORIZONS:
-        rows  = prob_table.get(h, [])
-        total = sum(p for _,p in rows) or 1
-        ev[h] = round(sum(mid*p for mid,(_,p) in zip(bin_mids,rows))/total, 4)
-    return ev
 
 
 def compute_var_es(current, returns, horizon_days=21, confidence=0.95, n_sims=10000):
@@ -218,79 +235,13 @@ def _build_lognorm_shape(current, sig_daily, horizon_days):
 def build_crack_spread_history(ho_history, wti_history):
     wti_map = {r["date"]: r["price"] for r in wti_history}
     return [
-        {"date": r["date"], "crack": round(float(r["price"])*42 - float(wti_map[r["date"]]), 2)}
+        {"date": r["date"], "ho": float(r["price"]), "wti": float(wti_map[r["date"]]),
+         "crack": round(float(r["price"])*cfg.GALLONS_PER_BARREL - float(wti_map[r["date"]]), 2)}
         for r in ho_history if r["date"] in wti_map
     ]
 
 
 # ── Forward Curve, KO Barrier & Expiry Distribution ──────────────────────────
-
-def _last_biz_day(year, month):
-    """Return the last business day (Mon–Fri) of the given year/month."""
-    import calendar
-    last = calendar.monthrange(year, month)[1]
-    d = datetime.date(year, month, last)
-    while d.weekday() >= 5:          # 5=Sat, 6=Sun
-        d -= datetime.timedelta(days=1)
-    return d
-
-
-def get_ho_contract_schedule(spot_price, sigma_daily, today=None):
-    """
-    Build 13 monthly HO contract rows (front month + next 12).
-    HO futures expire on the last business day of the month PRIOR to delivery.
-    Forward prices use a flat curve with a light seasonal overlay.
-
-    Returns a list of dicts with keys:
-      label, expiry_date, t_days (trading-day equivalent), fwd_price, sigma_daily
-    """
-    if today is None:
-        today = datetime.date.today()
-
-    # Locate the front delivery month: first month whose expiry (= last biz day of
-    # the prior month) is still on or after today.
-    y, m = today.year, today.month
-    for _ in range(14):                        # safety cap
-        exp_m, exp_y = m - 1, y
-        if exp_m == 0:
-            exp_m, exp_y = 12, y - 1
-        if _last_biz_day(exp_y, exp_m) >= today:
-            break
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
-
-    # Seasonal multipliers — mild winter premium, otherwise flat
-    seasonal_mult = {
-        "Nov": 1.020, "Dec": 1.030, "Jan": 1.025,
-        "Feb": 1.015, "Mar": 1.005,
-    }
-
-    contracts = []
-    for _ in range(13):
-        exp_m, exp_y = m - 1, y
-        if exp_m == 0:
-            exp_m, exp_y = 12, y - 1
-        exp_date    = _last_biz_day(exp_y, exp_m)
-        t_cal       = max(1, (exp_date - today).days)
-        # Convert calendar days to approximate trading days (252 / 365 ratio)
-        t_days      = max(1, round(t_cal * 252 / 365))
-        month_label = MONTH_ABBR[m - 1]
-        fwd_price   = round(spot_price * seasonal_mult.get(month_label, 1.0), 4)
-        contracts.append({
-            "label":       "{} {}".format(month_label, y),
-            "expiry_date": str(exp_date),
-            "t_days":      t_days,           # trading days (used for vol scaling)
-            "t_cal":       t_cal,            # calendar days (for reference)
-            "fwd_price":   fwd_price,
-            "sigma_daily": sigma_daily,
-        })
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
-
-    return contracts
-
 
 def barrier_touch_prob(S, B, T_days, sigma_daily, drift_daily=0.0):
     """
@@ -339,7 +290,7 @@ def compute_ko_probabilities(contracts, ko_price):
 
     Parameters
     ----------
-    contracts : list of dicts from get_ho_contract_schedule()
+    contracts : list of dicts from vol_engine.fetch_curve()
     ko_price  : float — the knock-out barrier ($/gal)
 
     Returns a list of dicts with keys:
@@ -366,20 +317,15 @@ def compute_expiry_distributions(contracts, sigma_daily, bin_edges=None, bin_lab
 
     Parameters
     ----------
-    contracts   : list of dicts from get_ho_contract_schedule()
+    contracts   : list of dicts from vol_engine.fetch_curve()
     sigma_daily : daily volatility (used as fallback if contract doesn't carry its own)
     bin_edges   : list of floats (±inf allowed) defining N+1 edges for N bins.
-                  Defaults to DISPLAY_BIN_EDGES.
-    bin_labels  : list of N label strings. Defaults to DISPLAY_BIN_LABELS.
+    bin_labels  : list of N label strings.
 
     Returns a list of dicts with keys:
       label, expiry, fwd_price, t_days, bin_probs (list of % per bin), bin_labels
     """
     from scipy.stats import norm as _norm
-    if bin_edges is None:
-        bin_edges  = DISPLAY_BIN_EDGES
-    if bin_labels is None:
-        bin_labels = DISPLAY_BIN_LABELS
 
     rows = []
     for c in contracts:
@@ -734,7 +680,7 @@ def market_summary(ho, wti, brent, vix, dxy, crack, eia_data, regime, weights):
         "  DXY               : {:.2f}".format(dxy or 0),
         "  Volatility (VIX)  : {:.1f}  [{}]".format(vix or 0, vix_r),
         "  HO Crack Spread   : ${:.2f}/bbl".format(crack or 0),"",
-        "EIA DISTILLATE STOCKS",
+        "EIA DISTILLATE STOCKS" + ("  (disabled)" if eia_data.get("disabled") else ""),
         "  Latest : {:,.0f} Mbbl".format(eia_s) if eia_s else "  Latest : N/A",
         "  WoW    : {:+,.0f} Mbbl".format(wow) if wow else "  WoW    : N/A","",
         "REGIME DETECTION", "  Current regime: {}".format(regime), "  Scenario weights:",
@@ -747,6 +693,11 @@ def market_summary(ho, wti, brent, vix, dxy, crack, eia_data, regime, weights):
     return "\n".join(lines)
 
 
+def _eia_disabled():
+    return {"stocks_mbbl": None, "wow_change": None, "weeks": [], "history": [],
+            "seasonal_bands": [], "current_year_data": [], "disabled": True}
+
+
 def run(send=print):
     send("=== HEATING OIL PROBABILITY ENGINE (deterministic) ===")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -754,14 +705,19 @@ def run(send=print):
     run_dir = os.path.join(OUTPUT_DIR, "{}_{}".format(ts, uuid.uuid4().hex[:8]))
     os.makedirs(run_dir, exist_ok=True)
 
-    names = ["HO","WTI","Brent","RBOB","DXY","VIX"]
+    names = ["HO","WTI","Brent","RBOB","DXY","VIX","USDBRL","IRX"]
     raw   = _df.fetch_all(names, send=send, history_days=365)
 
     ho_d=raw.get("HO",{}); wti_d=raw.get("WTI",{}); brent_d=raw.get("Brent",{})
     rbob_d=raw.get("RBOB",{}); dxy_d=raw.get("DXY",{}); vix_d=raw.get("VIX",{})
+    brl_d=raw.get("USDBRL",{}); irx_d=raw.get("IRX",{})
 
-    ho=ho_d.get("current",3.50); wti=wti_d.get("current"); brent=brent_d.get("current")
+    ho=ho_d.get("current"); wti=wti_d.get("current"); brent=brent_d.get("current")
+    if ho is None:
+        raise RuntimeError("HO price unavailable from all sources — see Run log")
     rbob=rbob_d.get("current"); dxy=dxy_d.get("current"); vix=vix_d.get("current")
+    usdbrl=brl_d.get("current")
+    rate = (irx_d.get("current") / 100) if irx_d.get("current") is not None else cfg.get("RISK_FREE_FALLBACK")
     returns=ho_d.get("returns",[]); history=ho_d.get("history",[])
     wti_history=wti_d.get("history",[])
     is_synthetic_history = ho_d.get("is_synthetic", any(r.get("synthetic") for r in history))
@@ -772,39 +728,50 @@ def run(send=print):
     elif not history:
         history=[{"date":today_str,"price":ho}]
 
-    crack = round(ho*42-(wti or 0),2) if wti else None
+    G = cfg.GALLONS_PER_BARREL
+    crack = round(ho*G-(wti or 0),2) if wti else None
     send("  HO ${:.4f}  WTI ${:.2f}  RBOB ${:.4f}  crack ${:.2f}  Volatility(VIX) {:.1f}".format(
         ho, wti or 0, rbob or 0, crack or 0, vix or 0))
 
-    eia_data = fetch_eia_distillate(send)
+    if cfg.get("EIA_ENABLED"):
+        eia_data = fetch_eia_distillate(send)
+    else:
+        send("EIA inventory: disabled (set EIA_ENABLED=true in Secrets to re-enable)")
+        eia_data = _eia_disabled()
     send("Detecting market regime ...")
     regime, weights = detect_regime(ho, wti, vix, crack, eia_data)
     send("  Regime: {}".format(regime))
 
-    send("Running probability models ...")
+    r_arr     = np.array(returns) if len(returns)>5 else np.random.normal(0,0.015,60)
+    sig_daily = min(float(np.std(r_arr,ddof=1)) or 0.015, 0.80/np.sqrt(252))
+
+    send("Running probability models (fine grid) ...")
     prices_hist   = [r["price"] for r in history]
     long_run_mean = float(np.mean(prices_hist)) if prices_hist else ho
-
-    prob_table={}; custom_by_horizon={}
+    fine = build_fine_edges(ho, sig_daily)
+    prob_grid = {}
     for h in HORIZONS:
         days = HORIZON_DAYS[h]
         try:
-            p1=lognormal_probs(ho,returns,days)
-            p2=bootstrap_probs(ho,returns,days)
-            p3=mean_reversion_probs(ho,returns,days,long_run_mean)
+            p1=lognormal_probs(ho,returns,days,fine)
+            p2=bootstrap_probs(ho,returns,days,fine)
+            p3=mean_reversion_probs(ho,returns,days,fine,long_run_mean)
             ens=ensemble3(p1,p2,p3)
         except Exception as e:
-            send("  [WARN] Model failed for {}: {}".format(h,e))
-            ens=[1/len(HO_PRICE_BINS)]*len(HO_PRICE_BINS)
-        prob_table[h]=list(zip(HO_PRICE_BINS,ens))
-        custom_by_horizon[h]={label:band_prob(ens,lo,hi) for label,lo,hi in CUSTOM_BANDS}
-        send("  {} done  (top bin: {})".format(h,max(zip(HO_PRICE_BINS,ens),key=lambda x:x[1])[0]))
+            send("  [WARN] Model failed for {}: {} — lognormal only".format(h,e))
+            ens=lognormal_probs(ho,returns,days,fine)
+        prob_grid[h] = {"edges": [float(x) for x in fine], "probs": [float(x) for x in ens]}
+        send("  {} done  (median ${:.4f})".format(h, grid_quantile(prob_grid[h], 0.5)))
+
+    # Default display table (UI re-bins on the fly from prob_grid)
+    def_edges = make_display_edges(ho, sig_daily, HORIZON_DAYS["3M"])
+    def_labels = edge_labels(def_edges)
+    prob_table = {h: list(zip(def_labels, grid_bin_probs(prob_grid[h], def_edges))) for h in HORIZONS}
+    ev_by_horizon = {h: round(grid_mean(prob_grid[h]), 4) for h in HORIZONS}
 
     summary = market_summary(ho,wti,brent,vix,dxy,crack,eia_data,regime,weights)
 
     send("Computing extended analytics ...")
-    r_arr     = np.array(returns) if len(returns)>5 else np.random.normal(0,0.015,60)
-    sig_daily = min(float(np.std(r_arr,ddof=1)) or 0.015, 0.80/np.sqrt(252))
 
     # CI Bands
     ci_bands={}
@@ -824,90 +791,60 @@ def run(send=print):
                 vol_heatmap.append({"date":history[i]["date"],
                     "vol":round(float(np.std(chunk,ddof=1))*np.sqrt(252)*100,2)})
 
-    # Log-normal shape
     lognorm_shape = _build_lognorm_shape(ho, sig_daily, HORIZON_DAYS["1M"])
+    crack_history = build_crack_spread_history(history, wti_history)
 
-    # Drivers (no Retail/Margin)
-    vix_v=vix or 20.0; crack_v=crack or 15.0
-    seasonal_m=datetime.date.today().month
-    seasonal_w=8.0 if seasonal_m in (11,12,1,2,3) else 3.0
-    eia_w=min(10.0,abs(eia_data.get("wow_change") or 0)/500)
-    raw_drvs=[
-        ("Crude Oil (WTI)",   round(min(20,abs((wti or ho*0.6)-ho*0.6)/ho*100),2) if wti else 5.0),
-        ("Crack Spread",      round(min(15,crack_v/3),2)),
-        ("Seasonal Demand",   round(seasonal_w,2)),
-        ("Volatility (VIX)",  round(min(12,max(0,(vix_v-15)/2)),2)),
-        ("EIA Inventory",     round(eia_w,2)),
-        ("USD Strength (DXY)",round(min(8,abs((dxy or 103)-103)/2),2) if dxy else 2.0),
-    ]
-    tot=sum(v for _,v in raw_drvs) or 1
-    drivers=[{"name":n,"value":round(v,2),"pct":round(v/tot*100,1)} for n,v in raw_drvs]
+    # ── Scenario presets (numeric shocks from historical percentiles) ─────────
+    base_vol_ann = sig_daily*np.sqrt(252)
+    scenario_presets = _se.compute_presets(
+        [r["wti"] for r in crack_history], [r["crack"] for r in crack_history],
+        list(r_arr), base_vol_ann)
 
-    # Scenarios — dynamic signal-driven drift + VIX-scaled vol
+    # Signal decomposition — thresholds are 1-year medians (data-driven)
+    vix_cur = vix or 20.0
+    crack_cur = crack if crack is not None else 0.0
+    crack_med = float(np.median([r["crack"] for r in crack_history])) if crack_history else crack_cur
+    vix_hist = vix_d.get("history", [])
+    vix_med = float(np.median([r["price"] for r in vix_hist])) if vix_hist else vix_cur
+    eia_wow = eia_data.get("wow_change") or 0.0
+    seasonal_month = datetime.date.today().month
+    m_avgs = {}
+    for r in history:
+        m_avgs.setdefault(int(str(r["date"])[5:7]), []).append(float(r["price"]))
+    yr_avg = float(np.mean(prices_hist)) if prices_hist else ho
+    seas_dev = (np.mean(m_avgs.get(seasonal_month, [yr_avg])) / yr_avg - 1) if yr_avg else 0.0
+    crack_signal    = float(np.clip((crack_cur - crack_med) / 100.0, -0.002, 0.003))
+    vix_signal      = float(np.clip(-(vix_cur - vix_med) / 2000.0, -0.002, 0.001))
+    eia_signal      = float(np.clip(-eia_wow / 5_000_000.0, -0.002, 0.002))
+    seasonal_signal = float(np.clip(seas_dev / HORIZON_DAYS["1M"], -0.002, 0.002))
+    base_dynamic_drift = crack_signal + vix_signal + eia_signal + seasonal_signal
+    vix_rolling_mean = float(np.mean([r["price"] for r in vix_hist[-20:]])) if len(vix_hist) >= 20 else vix_cur
+    vix_vol_mult = float(np.clip(vix_cur / max(vix_rolling_mean, 10.0), 0.5, 2.5))
+
+    # 14-day paths now driven by the same numeric presets (1M shock spread over 21 days)
     np.random.seed(42)
     fc_dates=[]
     d=datetime.date.today()
     while len(fc_dates)<14:
         d+=datetime.timedelta(days=1)
         if d.weekday()<5: fc_dates.append(str(d))
-
-    vix_cur = vix or 20.0
-    crack_cur = crack or 15.0
-    eia_wow = eia_data.get("wow_change") or 0.0
-    seasonal_month = datetime.date.today().month
-    crack_signal    = np.clip((crack_cur - 15.0) / 100.0, -0.002, 0.003)
-    vix_signal      = np.clip(-(vix_cur - 20.0) / 2000.0, -0.002, 0.001)
-    eia_signal      = np.clip(-eia_wow / 5_000_000.0, -0.002, 0.002)
-    seasonal_signal = 0.002 if seasonal_month in (11,12,1,2,3) else (-0.001 if seasonal_month in (5,6,7,8) else 0.0)
-    base_dynamic_drift = crack_signal + vix_signal + eia_signal + seasonal_signal
-
-    vix_hist = vix_d.get("history", [])
-    if len(vix_hist) >= 20:
-        vix_rolling_mean = float(np.mean([r["price"] for r in vix_hist[-20:]]))
-    else:
-        vix_rolling_mean = vix_cur
-    vix_vol_mult = float(np.clip(vix_cur / max(vix_rolling_mean, 10.0), 0.5, 2.5))
-
-    scenario_defs = {
-        "Base": {
-            "drift_bias": 0.000, "vol_mult_base": 1.0,
-            "label": "Signals: crack={:.2f}, VIX={:.1f}, seasonal={}".format(
-                crack_cur, vix_cur, "peak" if seasonal_month in (11,12,1,2,3) else "off-peak"),
-        },
-        "High Demand": {
-            "drift_bias": +0.003, "vol_mult_base": 1.2,
-            "label": "Demand surge: inventory draws, cold-snap premium",
-        },
-        "Supply Disruption": {
-            "drift_bias": +0.007, "vol_mult_base": 1.8,
-            "label": "Refinery outage or port disruption; crack spike",
-        },
-        "Stable Market": {
-            "drift_bias": -0.001, "vol_mult_base": 0.6,
-            "label": "Low VIX, balanced inventory, mild seasonal",
-        },
-        "Recession": {
-            "drift_bias": -0.006, "vol_mult_base": 1.4,
-            "label": "Demand destruction; VIX-driven vol expansion",
-        },
-    }
     scenario_paths = {}
-    for sname, sp in scenario_defs.items():
-        total_drift = base_dynamic_drift + sp["drift_bias"]
-        total_vol   = sig_daily * sp["vol_mult_base"] * vix_vol_mult
+    for sp in scenario_presets:
+        k, vr, vs = _se.scenario_factors(ho, wti, crack, base_vol_ann, sp)
+        total_drift = base_dynamic_drift + np.log(k) / HORIZON_DAYS["1M"]
+        total_vol   = vs / np.sqrt(252)
         path = [ho]
         for _ in range(14):
             path.append(round(float(path[-1] * np.exp(np.random.normal(total_drift, total_vol))), 4))
-        scenario_paths[sname] = {
-            "dates":       fc_dates,
-            "prices":      path[1:],
-            "final":       round(path[-1], 4),
+        scenario_paths[sp["name"]] = {
+            "dates": fc_dates, "prices": path[1:], "final": round(path[-1], 4),
             "total_drift": round(total_drift * 252 * 100, 2),
-            "vol_ann":     round(total_vol * np.sqrt(252) * 100, 2),
-            "label":       sp["label"],
+            "vol_ann": round(total_vol * np.sqrt(252) * 100, 2),
+            "label": "WTI {:+.1f}% · crack {:+.2f} $/bbl · vol {:+.1f} pts — {}".format(
+                sp["wti_pct"], sp["crack_chg"], sp["vol_pts"], sp["why"]),
         }
-    send("  Scenarios built (dynamic drift base={:.4f}, VIX mult={:.2f})".format(
-        base_dynamic_drift, vix_vol_mult))
+    send("  Scenarios built ({} presets, dynamic drift base={:.4f})".format(
+        len(scenario_presets), base_dynamic_drift))
 
     # Regional prices — US
     regional_prices=[
@@ -946,62 +883,63 @@ def run(send=print):
          "price":round(brl_base*1.19,4),"factor":"Agricultural interior, long haul distance"},
     ]
 
-    ev_by_horizon  = compute_ev_by_horizon(prob_table)
     var_es_1m      = compute_var_es(ho, list(r_arr), HORIZON_DAYS["1M"])
     var_es_3m      = compute_var_es(ho, list(r_arr), HORIZON_DAYS["3M"])
-    crack_history  = build_crack_spread_history(history, wti_history)
 
-    # Contract schedule, KO barrier table, expiry distribution table
-    send("Building contract schedule and derivative probability tables ...")
-    ho_contracts     = get_ho_contract_schedule(ho, sig_daily)
-    ko_default       = round(ho * 0.85, 4)
+    # Real forward curve (yfinance contracts -> CME settlements -> flat, flagged)
+    send("Fetching HO futures curve ...")
+    ho_contracts, curve_source = _ve.fetch_curve(ho, send)
+    for c in ho_contracts:
+        rv = _ve.realized_vol([x["price"] for x in c["history"]], 30)
+        c["sigma_daily"] = (rv / np.sqrt(252)) if rv else sig_daily
+    ko_default       = round(ho * cfg.get("KO_DEFAULT_PCT_OF_SPOT"), 4)
     ko_prob_rows     = compute_ko_probabilities(ho_contracts, ko_default)
-    expiry_dist_rows = compute_expiry_distributions(ho_contracts, sig_daily)
-    send("  Contract schedule: {} contracts  KO default ${:.4f}".format(
-        len(ho_contracts), ko_default))
+    send("  Contract schedule: {} contracts ({})  KO default ${:.4f}".format(
+        len(ho_contracts), curve_source, ko_default))
 
-    # Save report
     report_path = os.path.join(run_dir,"ho_report_{}.txt".format(ts))
     with open(report_path,"w",encoding="utf-8") as f:
-        f.write(summary+"\n\n")
-        f.write("--- PROBABILITY TABLES ---\n")
+        f.write(summary+"\n\n--- PROBABILITY TABLES ---\n")
         for h in HORIZONS:
             f.write("\n{}:\n".format(h))
             for b,p in prob_table[h]: f.write("  {:18s} {:.2%}\n".format(b,p))
         f.write("\n--- EV BY HORIZON ---\n")
         for h,ev in ev_by_horizon.items(): f.write("  {:4s}  EV=${:.4f}\n".format(h,ev))
-        f.write("\n--- KO PROBABILITY TABLE (default KO=${:.4f}) ---\n".format(ko_default))
-        for r in ko_prob_rows:
-            f.write("  {:12s}  exp={}  fwd=${:.4f}  P(touch)={:.1f}%\n".format(
-                r["label"], r["expiry"], r["fwd_price"], r["ko_prob"]))
     send("  Report saved")
     send("=== DONE ===")
 
     return {
         "agent":"ho","ho_price":ho,"history":history,"is_synthetic_history":is_synthetic_history,
         "returns":[round(float(r),6) for r in r_arr.tolist()],
-        "market_data":{"HO":ho,"WTI":wti,"Brent":brent,"RBOB":rbob,"DXY":dxy,"VIX":vix,"crack_spread":crack},
+        "wti_returns":[round(float(r),6) for r in wti_d.get("returns",[])],
+        "sigma_daily": sig_daily, "risk_free": rate,
+        "market_data":{"HO":ho,"WTI":wti,"Brent":brent,"RBOB":rbob,"DXY":dxy,"VIX":vix,
+                       "crack_spread":crack,"USDBRL":usdbrl},
+        "usdbrl_history": brl_d.get("history", []),
         "eia_data":eia_data,"regime":regime,
+        "prob_grid":prob_grid,
         "prob_table":{h:list(prob_table[h]) for h in HORIZONS},
-        "custom_bands":custom_by_horizon,"scenario_weights":weights,"summary":summary,
+        "scenario_weights":weights,"summary":summary,
         "ci_bands":ci_bands,"vol_heatmap":vol_heatmap,"lognorm_shape":lognorm_shape,
-        "drivers":drivers,"scenario_paths":scenario_paths,"regional_prices":regional_prices,
+        "drivers":[],"scenario_paths":scenario_paths,"scenario_presets":scenario_presets,
+        "regional_prices":regional_prices,
         "brazil_regional_prices":brazil_regional_prices,
         "ev_by_horizon":ev_by_horizon,"var_es":{"1M":var_es_1m,"3M":var_es_3m},
         "crack_history":crack_history,"run_dir":run_dir,
-        # Contract schedule + derivative probability tables
         "ho_contracts":     ho_contracts,
+        "curve_source":     curve_source,
         "ko_prob_rows":     ko_prob_rows,
         "ko_price_default": ko_default,
-        "expiry_dist_rows": expiry_dist_rows,
         "scenario_signals":{
             "base_dynamic_drift_ann":round(base_dynamic_drift*252*100,2),
             "vix_vol_mult":round(vix_vol_mult,3),
             "vix_rolling_mean":round(vix_rolling_mean,2),
+            "crack_median":round(crack_med,2), "vix_median":round(vix_med,2),
             "crack_signal_ann":round(crack_signal*252*100,2),
             "vix_signal_ann":round(vix_signal*252*100,2),
             "eia_signal_ann":round(eia_signal*252*100,2),
             "seasonal_signal_ann":round(seasonal_signal*252*100,2),
+            "eia_enabled": bool(cfg.get("EIA_ENABLED")),
         },
     }
 
