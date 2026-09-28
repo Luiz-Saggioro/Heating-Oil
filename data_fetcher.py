@@ -38,6 +38,8 @@ TICKER_MAP = {
     "DXY":   ("DX-Y.NYB",  "DX-Y.NYB",  "DTWEXBGS"    ),
     "VIX":   ("^VIX",      "%5EVIX",    "VIXCLS"      ),
     "OVX":   ("^OVX",      "%5EOVX",    None          ),   # CBOE Crude Oil ETF Vol Index
+    "USDBRL":("BRL=X",     "BRL%3DX",   "DEXBZUS"     ),   # BRL per USD (Brazil PPI)
+    "IRX":   ("^IRX",      "%5EIRX",    "DTB3"        ),   # 13-wk T-bill % (Black-76 rate)
 }
 
 # Sanity ranges — reject obviously wrong scraped values
@@ -49,6 +51,8 @@ _SANE = {
     "DXY":   (70.0, 150.0),
     "VIX":   (8.0,  100.0),
     "OVX":   (5.0,  150.0),   # OVX typically ranges 20–80 in normal markets
+    "USDBRL":(2.0,   15.0),
+    "IRX":   (0.0,   20.0),
 }
 
 _HEADERS = {
