@@ -13,6 +13,16 @@ Changes v3.1:
          P(each HO futures contract touches a user-specified KO price before expiry)
   - Add: Section 05B — Probability at Expiration Table (Table 2)
          Lognormal settlement distribution across 13 monthly contracts
+Changes v4.0 (market feedback — Tim):
+  - 03  Probability table: range/bins now dynamic around spot (narrower), user-adjustable
+  - 03B Scenario impact: numeric shocks (WTI %, crack $/bbl, vol pts) -> shifted distribution
+  - 04  KO: implied vol per contract + P(KO) under each scenario + price x vol heatmap
+  - 05  Volatility: CME settlement vol (auto -> upload -> labeled proxy), ATM IV vs realized,
+        term structure by month, vol by strike
+  - 05B Forward curve (real NYMEX contracts) + inter-month calendar spreads
+  - 06B Chicago ULSD basis + Brazil PPI (import parity) vs Petrobras
+  - 07  EIA inventory hidden behind EIA_ENABLED flag (config / Secrets)
+  - 12  Forecast track record: daily snapshots persisted to GitHub 'data' branch + evaluation
 Changes v3.2:
   - 02 Price History: title now shows HO1 — Front Contract with dynamic ticker (e.g. HOU26)
   - 01 Snapshot + 02 Price History: 30-second live spot price refresh via streamlit-autorefresh
@@ -31,6 +41,10 @@ from plotly.subplots import make_subplots
 import datetime
 import os
 import data_fetcher as _df
+import config as cfg
+import forecast_store as fs
+import vol_engine as ve
+import scenario_engine as se
 import json
 import hashlib
 # 30-second auto-refresh for live market data (Snapshot + Price History)
@@ -91,12 +105,15 @@ def reject_oversized(obj, max_len: int = _MAX_PAYLOAD, label: str = "input") -> 
 def security_audit_report() -> str:
     issues, passed = [], []
     eia = os.environ.get("EIA_API_KEY", "")
-    if not eia:
+    if not cfg.get("EIA_ENABLED"):
+        passed.append("EIA inventory disabled by flag (EIA_ENABLED=false)")
+    elif not eia:
         issues.append("EIA_API_KEY not set — EIA inventory fetch will fail")
     elif eia == "DEMO_KEY":
         issues.append("EIA_API_KEY is still 'DEMO_KEY' — set a real key")
     else:
         passed.append("EIA_API_KEY is set")
+    passed.append("Forecast store: " + fs.store_status().get("backend", "?"))
     if _RATE_LIMIT_MAX < 1 or _RATE_LIMIT_MAX > 100:
         issues.append(f"RATE_LIMIT_MAX_ATTEMPTS={_RATE_LIMIT_MAX} outside 1-100")
     else:
@@ -466,7 +483,7 @@ _tmpl = go.layout.Template(layout=go.Layout(
 pio.templates["energy_light"] = _tmpl
 pio.templates.default = "plotly+energy_light"
 PT = "plotly+energy_light"
-SCEN_COLORS = ["#1758b0","#987010","#b05828","#b82828","#5438a0"]
+SCEN_COLORS = ["#1758b0","#987010","#b05828","#b82828","#5438a0","#1a7a45"]
 HORIZONS    = ["1M","3M","6M","9M","12M"]
 _PCFG = {"displayModeBar":False,"displaylogo":False}
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
@@ -544,6 +561,153 @@ def interp_line(start,end,n):
     return [round(start+(end-start)*(i+1)/n,5) for i in range(n)]
 
 def _pc(key): return f"chart_{key}"
+
+_TH = ("padding:7px 12px;background:#eaeff6;color:#4e6880;font-family:'JetBrains Mono',monospace;"
+       "font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #c4d0de;"
+       "text-align:center;white-space:nowrap;")
+_TD = ("padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;"
+       "border-bottom:1px solid #d8e2ee;text-align:center;")
+
+def _html_table(headers, rows):
+    """rows: list of lists; each cell is str or (str, extra_css)."""
+    head = "".join(f'<th style="{_TH}">{html.escape(str(h))}</th>' for h in headers)
+    body = ""
+    for r in rows:
+        cells = ""
+        for c in r:
+            txt, css = (c if isinstance(c, tuple) else (c, "color:#1b2a3b;"))
+            cells += f'<td style="{_TD}{css}">{txt}</td>'
+        body += f"<tr>{cells}</tr>"
+    st.markdown(
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
+        f'<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>',
+        unsafe_allow_html=True)
+
+def _prob_color(p):
+    return "#b82828" if p >= 75 else "#987010" if p >= 50 else "#b87010" if p >= 25 else "#1a7a45"
+
+def _is_admin():
+    return bool(st.session_state.get("auth_is_admin"))
+
+def _fmt_pct(x, d=1):
+    return "—" if x is None or (isinstance(x, float) and np.isnan(x)) else f"{x:.{d}f}%"
+
+# ── Persistent store reads (cached; every write clears these) ────────────────
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_inputs():
+    return fs.load_market_inputs()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_forecasts():
+    return fs.load_forecasts()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_curves():
+    return fs.load_curves()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_atm_hist():
+    return fs.load_atm_history()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _store_status():
+    return fs.store_status()
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def _front_history_long():
+    try:
+        return pd.DataFrame(_df.fetch_history("HO", days=730, send=lambda _: None))
+    except Exception:
+        return pd.DataFrame()
+
+def _clear_store_caches():
+    for f in (_load_inputs, _load_forecasts, _load_curves, _load_atm_hist, build_vol_context):
+        f.clear()
+
+def _param(inputs, key):
+    v, _d = fs.latest_input(inputs, key, None)
+    return float(cfg.get(key)) if v is None else v
+
+# ── Volatility context: CME auto -> stored upload -> proxy -> realized ───────
+@st.cache_data(ttl=900, show_spinner=False)
+def build_vol_context(_result, run_key):
+    log = []
+    contracts = _result.get("ho_contracts", [])
+    rate = _result.get("risk_free") or cfg.get("RISK_FREE_FALLBACK")
+    surface, src = pd.DataFrame(), None
+    try:
+        surface, td = ve.fetch_cme_surface(contracts, rate, send=log.append)
+        if not surface.empty:
+            src = f"CME settlement ({td})"
+            if f"{td}.csv" not in fs.backend().list_dir("vols/surface"):
+                fs.save_vol_surface(surface, td, "CME auto")
+    except Exception as e:
+        log.append(f"  [CME] {type(e).__name__}: {e}")
+    if surface.empty:
+        try:
+            stored, td = fs.load_latest_vol_surface()
+            if not stored.empty:
+                surface = stored
+                kind = str(stored["source"].iloc[0]) if "source" in stored.columns else "stored"
+                src = f"CME settlement ({kind}, {td})"
+        except Exception as e:
+            log.append(f"  [store] vol surface: {type(e).__name__}")
+    atm = ve.atm_from_surface(surface, contracts) if not surface.empty else {}
+    ovx = fetch_live_prices().get("OVX")
+    proxy = ve.proxy_vols(contracts, ovx, _result.get("returns", []), _result.get("wti_returns", []))
+    vols = ve.resolve_contract_vols(contracts, (atm, src or "CME"), proxy, _result.get("returns", []))
+    rv = {c["label"]: {w: ve.realized_vol([h["price"] for h in c.get("history", [])], w)
+                       for w in (10, 20, 30)} for c in contracts}
+    return {"surface": surface, "surface_src": src, "atm": atm, "proxy": proxy,
+            "vols": vols, "rv": rv, "ovx": ovx, "log": log}
+
+def _contracts_with_vol(result, vctx, implied=True):
+    out = []
+    for c in result.get("ho_contracts", []):
+        c = dict(c)
+        sig, src = vctx["vols"].get(c["label"], (None, None)) if vctx else (None, None)
+        if implied and sig:
+            c["sigma_daily"], c["vol_src"] = sig / np.sqrt(252), src
+        else:
+            c["vol_src"] = "Realized"
+        out.append(c)
+    return out
+
+def _scenarios(result):
+    """Scenario list shared by 03B, 04 and 10 (edited values kept in session)."""
+    return st.session_state.get("scen_list") or result.get("scenario_presets", [])
+
+def _base_vol(result):
+    return float(result.get("sigma_daily", 0.015)) * np.sqrt(252)
+
+# ── Forecast autosave (first forecast of the day is the record) ──────────────
+def _autosave_snapshot(result, vctx, force=False):
+    if result.get("agent") != "ho" or not (cfg.get("FORECAST_AUTOSAVE") or force):
+        return None
+    key = f"{datetime.date.today()}|{result.get('run_dir')}"
+    if st.session_state.get("_snap_key") == key and not force:
+        return st.session_state.get("_snap_res")
+    today = str(datetime.date.today())
+    curve_rows = [{"date": today, "contract": c["label"], "expiry": c["expiry_date"],
+                   "price": c["fwd_price"], "source": c.get("price_source")}
+                  for c in result.get("ho_contracts", []) if c.get("price_source") != "estimated"]
+    atm_rows = []
+    for c in result.get("ho_contracts", []):
+        sig, src = vctx["vols"].get(c["label"], (None, None))
+        rvs = vctx["rv"].get(c["label"], {})
+        atm_rows.append({"date": today, "contract": c["label"], "expiry": c["expiry_date"],
+                         "futures": c["fwd_price"], "iv_atm": sig, "iv_source": src,
+                         "rv20": rvs.get(20), "rv30": rvs.get(30), "ovx": vctx.get("ovx")})
+    try:
+        res = fs.save_daily_snapshot(result, curve_rows, atm_rows, vctx["vols"],
+                                     user=st.session_state.get("auth_user", ""))
+    except Exception as e:
+        res = {"error": f"{type(e).__name__}"}
+    st.session_state["_snap_key"], st.session_state["_snap_res"] = key, res
+    if any(v for k, v in res.items() if k != "error"):
+        _clear_store_caches()
+    return res
 
 def _get_front_contract_ticker() -> str:
     """
@@ -749,11 +913,54 @@ def render_price_history(result, agent):
 
 
 # ── ③ PROBABILITY DISTRIBUTION ───────────────────────────────────────────────
+def display_prob_table(result, sel_h):
+    """Re-bin the model's fine-grid distribution into the display bins chosen by the user.
+    Returns (edges, labels, {horizon: [probabilities]})."""
+    import ho_agent as H
+    grid = result.get("prob_grid")
+    if not grid:                                   # WTI engine / legacy result
+        pt = result.get("prob_table", {})
+        labels = [r[0] for r in pt.get(HORIZONS[0], [])]
+        return None, labels, {h: [r[1] for r in pt.get(h, [])] for h in HORIZONS}
+    ss = st.session_state
+    spot, sd = result["ho_price"], result.get("sigma_daily", 0.015)
+    edges = None
+    if ss.get("pt_manual"):
+        lo, hi, stp = ss.get("pt_min"), ss.get("pt_max"), ss.get("pt_step")
+        if lo and hi and stp and hi > lo and 1 <= (hi - lo) / stp <= 60:
+            edges = [round(float(x), 4) for x in np.arange(lo, hi + stp / 2, stp)]
+    if not edges:
+        edges = H.make_display_edges(spot, sd, H.HORIZON_DAYS[sel_h],
+                                     ss.get("pt_sigma"), ss.get("pt_bins"))
+    labels = H.edge_labels(edges)
+    return edges, labels, {h: H.grid_bin_probs(grid[h], edges) for h in HORIZONS}
+
+
 def render_prob_dist(result, agent, sel_h, sel_bin):
-    section("03","PROBABILITY DISTRIBUTION","Horizon selector in sidebar")
+    section("03","PROBABILITY DISTRIBUTION","Horizon selector in sidebar · range adapts to horizon")
     ho   = agent=="ho"
+    if ho and result.get("prob_grid"):
+        ss = st.session_state
+        ss.setdefault("pt_sigma", float(cfg.get("PROB_TABLE_SIGMA_RANGE")))
+        ss.setdefault("pt_bins", int(cfg.get("PROB_TABLE_BINS")))
+        k1, k2, k3 = st.columns([2, 2, 1])
+        k1.slider(f"Table range (± σ of {sel_h} move)", 1.0, 4.0, step=0.5, key="pt_sigma",
+                  help="Narrower = focus on the likely zone around today's price. "
+                       "Tails are always shown as '<' and '>' rows so totals stay 100%.")
+        k2.slider("Number of price bins", 4, 20, key="pt_bins")
+        k3.checkbox("Manual range", key="pt_manual")
+        if ss.get("pt_manual"):
+            import ho_agent as H
+            auto = H.make_display_edges(result["ho_price"], result.get("sigma_daily", 0.015),
+                                        H.HORIZON_DAYS[sel_h], ss.get("pt_sigma"), ss.get("pt_bins"))
+            m1, m2, m3 = st.columns(3)
+            m1.number_input("Min ($/gal)", value=float(auto[0]), step=0.05, format="%.2f", key="pt_min")
+            m2.number_input("Max ($/gal)", value=float(auto[-1]), step=0.05, format="%.2f", key="pt_max")
+            m3.number_input("Bin width ($/gal)", value=float(round(auto[1]-auto[0], 4)) if len(auto) > 1 else 0.10,
+                            min_value=0.01, step=0.01, format="%.2f", key="pt_step")
+    edges, labels, table = display_prob_table(result, sel_h)
     c1,c2 = st.columns(2)
-    rows = result.get("prob_table",{}).get(sel_h,[])
+    rows = list(zip(labels, table.get(sel_h, [])))
     if not rows: return
     bins  = [r[0] for r in rows]
     probs = [round(r[1]*100,2) for r in rows]
@@ -792,7 +999,7 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
         for col,h in zip(ev_cols,HORIZONS):
             col.metric(h,f"${ev.get(h,0):.4f}" if ho else f"${ev.get(h,0):.2f}")
     st.markdown("**Probability Table** — all horizons")
-    _render_prob_table(result, agent, sel_h, sel_bin)
+    _render_prob_table(labels, table, sel_h, sel_bin)
     if ho:
         ls = result.get("lognorm_shape",{})
         if ls:
@@ -815,49 +1022,162 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
                     xaxis=dict(title="HO Price ($/gal)"),yaxis=dict(title="Probability Density"),showlegend=False)
                 st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("lognorm"))
             with c_b:
-                st.markdown("""<div style="padding:16px;background:#eaeff6;border:1px solid #c4d0de;border-radius:8px;
-                    font-family:'JetBrains Mono',monospace;font-size:11px;line-height:2;color:#1b2a3b">""",
-                    unsafe_allow_html=True)
                 st.metric("Mean",    f"${ls['mean']:.4f}")
                 st.metric("Median",  f"${ls['median']:.4f}")
                 st.metric("Skewness",f"{ls['skewness']:.3f}")
                 st.metric("Kurtosis",f"{ls['kurtosis']:.3f}")
-                st.markdown("</div>",unsafe_allow_html=True)
 
-def _render_prob_table(result, agent, sel_h, sel_bin):
-    ho   = agent=="ho"
-    rows = result.get("prob_table",{})
-    if not rows: return
-    th = "padding:7px 12px;background:#eaeff6;color:#4e6880;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #c4d0de;text-align:center;white-space:nowrap;"
-    td = "padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #d8e2ee;text-align:center;"
-    heads = "".join(f'<th style="{th}">{h}</th>' for h in ["Bin"]+HORIZONS)
-    bin_keys = [r[0] for r in rows.get(HORIZONS[0],[])]
-    body = ""
-    for b in bin_keys:
-        sel = sel_bin==b
-        row_bg = "background:#e2edf8;" if sel else ""
-        cells = f'<td style="{td}{row_bg}color:#1b2a3b;font-weight:{"700" if sel else "400"}">{b}</td>'
+def _render_prob_table(labels, table, sel_h, sel_bin):
+    if not labels: return
+    rows = []
+    for i, b in enumerate(labels):
+        sel = sel_bin == b
+        bg = "background:#e2edf8;" if sel else ""
+        r = [(b, f"{bg}color:#1b2a3b;font-weight:{'700' if sel else '400'}")]
         for h in HORIZONS:
-            p = next((r[1] for r in rows.get(h,[]) if r[0]==b), 0)
-            pct = round(p*100,1)
-            c = "#b87010" if (h==sel_h and pct==max(round(r[1]*100,1) for r in rows.get(h,[]))) else "#1b2a3b"
-            cells += f'<td style="{td}{row_bg}color:{c}">{pct:.1f}%</td>'
-        body += f"<tr>{cells}</tr>"
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
-        f'<thead><tr>{heads}</tr></thead><tbody>{body}</tbody></table></div>',
-        unsafe_allow_html=True)
+            col = table.get(h, [])
+            pct = round(col[i]*100, 1) if i < len(col) else 0.0
+            top = h == sel_h and col and pct == round(max(col)*100, 1)
+            r.append((f"{pct:.1f}%", f"{bg}color:{'#b87010' if top else '#1b2a3b'}"))
+        rows.append(r)
+    _html_table(["Bin"] + HORIZONS, rows)
 
 
-# ── ⑤ VOLATILITY (dynamic y-axis + period filter) ────────────────────────────
-def render_volatility(result):
+# ── ③B SCENARIO IMPACT ───────────────────────────────────────────────────────
+def render_scenario_impact(result, sel_h):
+    section("03B", "SCENARIO IMPACT ON PROBABILITY DISTRIBUTION",
+            "If X happens → numbers · preset shock sizes = historical 1-month percentile moves")
+    import ho_agent as H
+    presets = result.get("scenario_presets") or []
+    grid = result.get("prob_grid", {}).get(sel_h)
+    if not presets or not grid:
+        st.info("Scenario analysis needs the HO engine with WTI history.")
+        return
+    md = result.get("market_data", {})
+    ho, wti, crack = result["ho_price"], md.get("WTI"), md.get("crack_spread")
+    base_vol = _base_vol(result)
+    st.caption(
+        f"Edit any shock below — every table and chart updates. HO under a scenario uses the crack identity "
+        f"HO = (WTI + crack) / {cfg.GALLONS_PER_BARREL}. Today: WTI **${wti or 0:.2f}**, crack **${crack or 0:.2f}/bbl**, "
+        f"model vol **{base_vol*100:.1f}%**. Shocks are assumed realised by the {sel_h} horizon.")
+    df0 = pd.DataFrame([{"Scenario": p["name"], "WTI change (%)": p["wti_pct"],
+                         "Crack change ($/bbl)": p["crack_chg"], "Vol change (pts)": p["vol_pts"],
+                         "Rationale": p["why"]} for p in presets] +
+                       [{"Scenario": "Custom", "WTI change (%)": 0.0, "Crack change ($/bbl)": 0.0,
+                         "Vol change (pts)": 0.0, "Rationale": "Your own what-if"}])
+    ed = st.data_editor(df0, key="scen_editor", hide_index=True, num_rows="fixed",
+                        disabled=["Scenario", "Rationale"], use_container_width=True,
+                        column_config={
+                            "WTI change (%)": st.column_config.NumberColumn(format="%.2f", min_value=-90.0, max_value=300.0),
+                            "Crack change ($/bbl)": st.column_config.NumberColumn(format="%.2f", min_value=-100.0, max_value=200.0),
+                            "Vol change (pts)": st.column_config.NumberColumn(format="%.2f",
+                                                                              min_value=-base_vol*100 + 2, max_value=200.0)})
+    scen = [{"name": r["Scenario"], "wti_pct": float(r["WTI change (%)"] or 0),
+             "crack_chg": float(r["Crack change ($/bbl)"] or 0),
+             "vol_pts": float(r["Vol change (pts)"] or 0), "why": r["Rationale"]}
+            for _, r in ed.iterrows()]
+    st.session_state["scen_list"] = scen
+
+    edges, labels, _tbl = display_prob_table(result, sel_h)
+    med = H.grid_quantile(grid, 0.5)
+    cdf = lambda x: H.grid_cdf(grid, x)
+    qf  = lambda u: H.grid_quantile(grid, u)
+    t1, t2 = st.columns(2)
+    thr_lo = t1.number_input("Show P(price below) $/gal", value=round(float(qf(0.25)), 2),
+                             step=0.05, format="%.2f", key="scen_thr_lo")
+    thr_hi = t2.number_input("Show P(price above) $/gal", value=round(float(qf(0.75)), 2),
+                             step=0.05, format="%.2f", key="scen_thr_hi")
+    us = np.linspace(0.0025, 0.9975, 400)
+    out, base_ev = [], None
+    for s in scen:
+        k, vr, vs = se.scenario_factors(ho, wti, crack, base_vol, s)
+        q = lambda u: se.scen_quantile(qf, u, med, k, vr)
+        ev = float(np.mean([q(u) for u in us]))
+        base_ev = ev if base_ev is None else base_ev
+        out.append(dict(s=s, k=k, vs=vs, ho_s=ho * k, ev=ev, p10=q(.10), p50=q(.50), p90=q(.90),
+                        plo=se.scen_cdf(cdf, thr_lo, med, k, vr) * 100,
+                        phi=(1 - se.scen_cdf(cdf, thr_hi, med, k, vr)) * 100,
+                        bins=se.bin_probs(cdf, edges, med, k, vr) * 100))
+    rows = []
+    for i, o in enumerate(out):
+        c = SCEN_COLORS[i % len(SCEN_COLORS)]
+        d = o["ev"] - base_ev
+        rows.append([(o["s"]["name"], f"color:{c};font-weight:700;text-align:left"),
+                     f'{o["s"]["wti_pct"]:+.1f}%', f'{o["s"]["crack_chg"]:+.2f}', f'{o["vs"]*100:.1f}%',
+                     f'${o["ho_s"]:.4f}', f'${o["p50"]:.4f}', f'${o["ev"]:.4f}',
+                     f'${o["p10"]:.4f} – ${o["p90"]:.4f}',
+                     (f'{o["plo"]:.1f}%', "color:#b82828;"), (f'{o["phi"]:.1f}%', "color:#1a7a45;"),
+                     (f'{d:+.4f}', f"color:{'#1a7a45' if d >= 0 else '#b82828'};")])
+    st.markdown(f"**Scenario outcomes — {sel_h} horizon**")
+    _html_table(["Scenario", "WTI", "Crack Δ", "Vol", "HO implied", "Median", "EV",
+                 "80% range", f"P(< ${thr_lo:.2f})", f"P(> ${thr_hi:.2f})", "EV Δ vs Base"], rows)
+
+    fig = go.Figure()
+    for i, o in enumerate(out):
+        fig.add_trace(go.Scatter(x=labels, y=o["bins"], mode="lines+markers", name=o["s"]["name"],
+                                 line=dict(color=SCEN_COLORS[i % len(SCEN_COLORS)],
+                                           width=3 if i == 0 else 1.8, dash=None if i == 0 else "dot"),
+                                 hovertemplate="%{x}: %{y:.1f}%<extra>" + o["s"]["name"] + "</extra>"))
+    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=340,
+                      title=dict(text=f"Probability by Price Bin under each Scenario — {sel_h}",
+                                 font=dict(size=11, color="#1b2a3b")),
+                      yaxis=dict(title="Probability (%)", ticksuffix="%"), xaxis=dict(title="Price range"),
+                      hovermode="x unified",
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("scen_impact"))
+
+    rows = []
+    for j, lbl in enumerate(labels):
+        r = [(lbl, "color:#1b2a3b;font-weight:600")]
+        for i, o in enumerate(out):
+            p = o["bins"][j]
+            if i == 0:
+                r.append(f"{p:.1f}%")
+            else:
+                dp = p - out[0]["bins"][j]
+                col = "#1a7a45" if dp > 0.05 else "#b82828" if dp < -0.05 else "#7a92a8"
+                r.append((f'{p:.1f}% <span style="color:{col};font-size:9px">({dp:+.1f})</span>', "color:#1b2a3b;"))
+        rows.append(r)
+    with st.expander("Full distribution by scenario (Δ pp vs Base)", expanded=False):
+        _html_table(["Bin"] + [o["s"]["name"] for o in out], rows)
+
+
+# ── ⑤ VOLATILITY ─────────────────────────────────────────────────────────────
+def render_volatility(result, vctx=None):
+    ho = result.get("agent") == "ho"
     section("05","VOLATILITY",
-            "Rolling 10-day & 30-day annualised vol · OVX implied vol proxy (live)")
+            "CME settlement implied vol · ATM implied vs realized · term structure · vol by strike"
+            if ho else "Rolling 10-day & 30-day annualised vol · OVX implied vol proxy (live)")
     vh = result.get("vol_heatmap",[])
     if not vh:
         st.info("Insufficient history for volatility (need > 11 trading days)")
         return
+    contracts = result.get("ho_contracts", [])
+    front = contracts[0] if contracts else None
+    live = fetch_live_prices()
+    ovx_val = live.get("OVX")
+
+    # ── Source banner + headline metrics ──────────────────────────────────────
+    iv_front, iv_src = (vctx["vols"].get(front["label"], (None, None)) if (ho and vctx and front) else (None, None))
+    if ho:
+        if iv_src and iv_src.startswith("CME"):
+            st.success(f"Implied vol source: **{iv_src}** — Black-76 settlement vols from CME option settlements.")
+        elif iv_src == "Proxy":
+            st.warning("Implied vol source: **Proxy** (OVX × HO/WTI realized-vol ratio). CME settlement vols "
+                       "were not reachable and none have been uploaded — an admin can upload the CME file below.")
+        else:
+            st.warning("No implied vol available — showing realized vol only.")
+        rvf = vctx["rv"].get(front["label"], {}) if (vctx and front) else {}
+        m = st.columns(5)
+        m[0].metric(f"ATM IV {front['code'] if front else ''}", _fmt_pct(iv_front*100 if iv_front else None),
+                    help=f"Source: {iv_src or 'n/a'}")
+        m[1].metric("Realized 10d", _fmt_pct(rvf.get(10)*100 if rvf.get(10) else None))
+        m[2].metric("Realized 20d", _fmt_pct(rvf.get(20)*100 if rvf.get(20) else None))
+        m[3].metric("Realized 30d", _fmt_pct(rvf.get(30)*100 if rvf.get(30) else None))
+        prem = (iv_front - rvf[30]) * 100 if (iv_front and rvf.get(30)) else None
+        m[4].metric("IV − RV30 premium", f"{prem:+.1f} pts" if prem is not None else "—",
+                    help="Positive = options price more movement than recently realized")
+
     df_full = pd.DataFrame(vh)
     df_full["date"] = pd.to_datetime(df_full["date"])
     period_opts = ["1M","3M","6M","1Y"]
@@ -870,210 +1190,217 @@ def render_volatility(result):
     df     = df_full[df_full["date"]>=cutoff].copy()
     if df.empty: df = df_full.tail(10).copy()
 
-    # ── Compute Rolling 30-day realised vol from daily history ────────────────
-    hist = result.get("history", [])
-    roll30_dates, roll30_vals = [], []
-    if len(hist) >= 32:
-        h_df = pd.DataFrame(hist)
-        h_df["date"]  = pd.to_datetime(h_df["date"])
-        h_df["price"] = h_df["price"].astype(float)
-        h_df = h_df.sort_values("date").reset_index(drop=True)
-        h_df["ret"]   = np.log(h_df["price"] / h_df["price"].shift(1))
-        h_df["vol30"] = h_df["ret"].rolling(30).std() * np.sqrt(252) * 100
-        h_df = h_df.dropna(subset=["vol30"])
-        h_df = h_df[h_df["date"] >= cutoff]
-        roll30_dates = h_df["date"].tolist()
-        roll30_vals  = h_df["vol30"].round(2).tolist()
+    # Realized from the FRONT CONTRACT when available (else continuous HO=F)
+    base_hist = front["history"] if (front and len(front.get("history", [])) > 32) else result.get("history", [])
+    r30 = ve.rolling_realized(base_hist, 30)
+    r30 = r30[r30["date"] >= cutoff]
 
-    # ── OVX live implied vol proxy ─────────────────────────────────────────────
-    live     = fetch_live_prices()
-    ovx_val  = live.get("OVX")   # float or None
+    # Stored daily ATM IV history (builds up from each day's snapshot)
+    iv_hist = pd.DataFrame()
+    if ho and front:
+        ah = _load_atm_hist()
+        if not ah.empty and "iv_atm" in ah.columns:
+            ah = ah.dropna(subset=["iv_atm"]).copy()
+            ah["date"] = pd.to_datetime(ah["date"])
+            ah = ah.sort_values(["date", "expiry"]).groupby("date").first().reset_index()   # front each day
+            iv_hist = ah[ah["date"] >= cutoff]
 
-    # Dynamic y-axis across all series
-    all_vals = list(df["vol"])
-    if roll30_vals: all_vals += roll30_vals
-    if ovx_val:     all_vals.append(ovx_val)
-    v_max   = float(max(all_vals)) if all_vals else 30.0
-    v_min   = float(min(all_vals)) if all_vals else 0.0
-    y_upper = round(v_max * 1.10, 2)
-    y_lower = round(max(0, v_min * 0.80), 2)
+    all_vals = list(df["vol"]) + list(r30["rv"]*100)
+    if not iv_hist.empty: all_vals += list(iv_hist["iv_atm"]*100)
+    if ovx_val: all_vals.append(ovx_val)
+    if iv_front: all_vals.append(iv_front*100)
+    y_upper = round(max(all_vals) * 1.10, 2) if all_vals else None
+    y_lower = round(max(0, min(all_vals) * 0.80), 2) if all_vals else 0
     avg     = float(df["vol"].mean())
-
-    line_color = "#b87010" if result.get("agent") == "ho" else "#1758b0"
+    line_color = "#b87010" if ho else "#1758b0"
     fig = go.Figure()
-
-    # Rolling 10-day
-    fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines",
-        line=dict(color=line_color,width=2),
-        name="Rolling 10d Ann. Vol",
-        hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>10d RVol</extra>"))
-
-    # Rolling 30-day
-    if roll30_vals:
-        fig.add_trace(go.Scatter(x=roll30_dates,y=roll30_vals,mode="lines",
-            line=dict(color="#5438a0",width=1.8,dash="dot"),
-            name="Rolling 30d Ann. Vol",
-            hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>30d RVol</extra>"))
-
-    # Average reference line
-    fig.add_hline(y=avg,line=dict(color="#987010",width=1,dash="dash"),
-        annotation_text=f"10d Avg {avg:.1f}%",
-        annotation_font=dict(color="#987010",size=9))
-
-    # OVX implied vol proxy — horizontal band
+    fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines",line=dict(color=line_color,width=2),
+        name="Realized 10d", hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>10d RV</extra>"))
+    if not r30.empty:
+        fig.add_trace(go.Scatter(x=r30["date"],y=r30["rv"]*100,mode="lines",
+            line=dict(color="#5438a0",width=1.8,dash="dot"), name="Realized 30d",
+            hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>30d RV</extra>"))
+    if not iv_hist.empty:
+        fig.add_trace(go.Scatter(x=iv_hist["date"], y=iv_hist["iv_atm"]*100, mode="lines+markers",
+            line=dict(color="#1a7a45", width=2), marker=dict(size=5), name="ATM Implied (front, stored)",
+            hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>ATM IV</extra>"))
+    if iv_front:
+        fig.add_trace(go.Scatter(x=[pd.Timestamp.today().normalize()], y=[iv_front*100], mode="markers",
+            marker=dict(color="#1a7a45", size=12, symbol="diamond"), name=f"ATM IV today ({iv_src})",
+            hovertemplate="Today: %{y:.1f}%<extra>ATM IV</extra>"))
     if ovx_val:
-        fig.add_hline(y=ovx_val,line=dict(color="#1a7a45",width=1.5,dash="dashdot"),
-            annotation_text=f"OVX IV Proxy {ovx_val:.1f}%",
-            annotation_font=dict(color="#1a7a45",size=9))
-
+        fig.add_hline(y=ovx_val,line=dict(color="#987010",width=1,dash="dashdot"),
+            annotation_text=f"OVX {ovx_val:.1f}", annotation_font=dict(color="#987010",size=9))
     fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=320,
-        title=dict(text=f"Realised Volatility (10d / 30d) + OVX Implied Vol Proxy — {period}",
+        title=dict(text=f"Front-Month ATM Implied vs Realized Volatility — {period}",
                    font=dict(size=11,color="#1b2a3b")),
         xaxis=dict(title="",type="date"),
-        yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper]),
-        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1),
-        showlegend=True)
+        yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper] if y_upper else None),
+        legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
     st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
+    if not ho:
+        return
 
-    # ── OVX metric card ───────────────────────────────────────────────────────
-    if ovx_val:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("OVX (IV Proxy)", f"{ovx_val:.1f}", help="CBOE Crude Oil ETF Volatility Index — live via yfinance")
-        c2.metric("10d Realised Vol", f"{avg:.1f}%")
-        if roll30_vals:
-            avg30 = round(float(np.mean(roll30_vals)), 1)
-            c3.metric("30d Realised Vol", f"{avg30:.1f}%")
-        st.caption(
-            "**OVX** (CBOE Crude Oil ETF Volatility Index) is used as an energy implied volatility proxy. "
-            "HO-specific options IV requires CME DataMine or Bloomberg subscription."
-        )
+    # ── Term structure: vol for each month going forward ─────────────────────
+    labels = [c["label"] for c in contracts]
+    ivs  = [vctx["vols"].get(l, (None, None))[0] for l in labels]
+    srcs = [vctx["vols"].get(l, (None, None))[1] or "" for l in labels]
+    rv30 = [vctx["rv"].get(l, {}).get(30) for l in labels]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=[v*100 if v else None for v in ivs], name="ATM Implied",
+        marker_color=["#1a7a45" if s_.startswith("CME") else "#987010" if s_ == "Proxy" else "#7a92a8" for s_ in srcs],
+        text=[f"{v*100:.1f}%" if v else "" for v in ivs], textposition="outside",
+        customdata=srcs, hovertemplate="%{x}: %{y:.1f}%<br>%{customdata}<extra>ATM IV</extra>"))
+    fig.add_trace(go.Scatter(x=labels, y=[v*100 if v else None for v in rv30], name="Realized 30d (contract)",
+        mode="lines+markers", line=dict(color="#5438a0", width=2, dash="dot"),
+        hovertemplate="%{x}: %{y:.1f}%<extra>RV30</extra>"))
+    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+        title=dict(text="Volatility Term Structure — ATM Implied vs Realized by Contract Month",
+                   font=dict(size=11, color="#1b2a3b")),
+        yaxis=dict(title="Ann. Vol (%)", ticksuffix="%"), bargap=0.25,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("vol_term"))
+    st.caption("Green = CME settlement vol · Amber = proxy · Gray = realized fallback")
+
+    # ── Vol by strike (smile) ─────────────────────────────────────────────────
+    surf = vctx.get("surface", pd.DataFrame())
+    if surf is not None and not surf.empty and "strike" in surf.columns:
+        avail = [l for l in labels if l in set(surf["contract"])]
+        pick = st.multiselect("Compare vol by strike — contracts", avail, default=avail[:3], key="smile_pick")
+        mode = st.radio("Strike axis", ["Strike ($/gal)", "Moneyness (K/F)"], horizontal=True, key="smile_axis")
+        fig = go.Figure()
+        cmap = {c["label"]: c for c in contracts}
+        for i, l in enumerate(pick):
+            d = surf[surf["contract"] == l].groupby("strike", as_index=False)["iv"].mean().sort_values("strike")
+            F = cmap[l]["fwd_price"]
+            x = d["strike"] if mode.startswith("Strike") else d["strike"] / F
+            fig.add_trace(go.Scatter(x=x, y=d["iv"]*100, mode="lines+markers", name=l,
+                line=dict(color=SCEN_COLORS[i % len(SCEN_COLORS)], width=2), marker=dict(size=4),
+                hovertemplate="K %{x:.3f}: %{y:.1f}%<extra>" + l + "</extra>"))
+            fig.add_vline(x=F if mode.startswith("Strike") else 1.0,
+                          line=dict(color=SCEN_COLORS[i % len(SCEN_COLORS)], width=1, dash="dot"))
+        fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=320,
+            title=dict(text=f"Settlement Vol by Strike — {vctx.get('surface_src')}", font=dict(size=11, color="#1b2a3b")),
+            xaxis=dict(title=mode), yaxis=dict(title="Implied Vol (%)", ticksuffix="%"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("vol_smile"))
+        st.caption("Dotted lines = each contract's futures price (ATM). OTM puts below, OTM calls above.")
+    else:
+        st.info("Vol by strike needs CME settlement data (auto-fetch or admin upload).")
+
+    if _is_admin():
+        with st.expander("Admin — upload CME settlement vol file", expanded=False):
+            st.caption("CSV/XLSX from CME / QuikStrike. Required: a contract/month column and either a vol "
+                       "column (% or decimal) or a settlement premium column (inverted with Black-76). "
+                       "Optional: strike, put/call, futures price. No strike = ATM vol.")
+            up = st.file_uploader("CME vol file", type=["csv", "xlsx"], key="cme_upload")
+            td = st.date_input("Trade date", value=datetime.date.today() - datetime.timedelta(days=1), key="cme_td")
+            if up is not None and st.button("Parse & save", key="cme_save"):
+                try:
+                    if up.size > _MAX_PAYLOAD * 64:
+                        raise ValueError("File too large")
+                    raw = pd.read_excel(up) if up.name.lower().endswith("xlsx") else pd.read_csv(up)
+                    surf_new, skipped = ve.parse_vol_upload(raw, contracts, result.get("risk_free") or cfg.get("RISK_FREE_FALLBACK"))
+                    ok = fs.save_vol_surface(surf_new, str(td), "Upload")
+                    _clear_store_caches()
+                    (st.success if ok else st.error)(
+                        f"{len(surf_new)} vol points saved ({skipped} rows skipped)." if ok else "Save failed — check store status.")
+                except Exception as e:
+                    st.error(f"Could not parse file: {sanitize_str(str(e))}")
 
 
-# ── ⑤ KO PROBABILITY TABLE ───────────────────────────────────────────────────
-def render_ko_table(result, agent):
-    """
-    Table 1: Probability of Each HO Contract Hitting the KO Price.
-    Rows: 13 monthly contracts (front month + next 12).
-    Columns: Contract, Expiration, Futures Price, KO Price, P(Touch KO).
-    Model: GBM reflection principle (zero-drift, risk-neutral for futures).
-    """
+# ── ④ KO PROBABILITY TABLE ───────────────────────────────────────────────────
+def render_ko_table(result, agent, vctx=None):
+    """P(each HO contract touches the KO barrier before expiry), using implied vol per
+    contract, plus the same probability under each numeric scenario."""
     if agent != "ho":
         return
     section("04", "KO PROBABILITY BY CONTRACT",
-            "P(price touches KO barrier at any point before expiry)")
-
-    contracts = result.get("ho_contracts", [])
-    if not contracts:
+            "P(touch KO before expiry) · implied vol per contract · scenario map")
+    if not result.get("ho_contracts"):
         st.info("Forward curve data unavailable — re-run the HO engine.")
         return
-
     import ho_agent as _ho_mod
-
-    ho_spot   = result.get("market_data", {}).get("HO", result.get("ho_price", 3.5))
-    r_arr     = np.array(result.get("returns", []))
-    sig_daily = float(np.std(r_arr, ddof=1)) if len(r_arr) > 5 else 0.015
-    sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
-    ann_vol   = sig_daily * np.sqrt(252) * 100
-
-    default_ko = float(result.get("ko_price_default", round(ho_spot * 0.85, 4)))
-
-    ko_price = st.number_input(
-        "KO Price ($/gal)",
-        min_value=0.01, max_value=20.0,
-        value=default_ko, step=0.01, format="%.4f",
-        key="ko_price_input",
-        help="Knock-Out barrier price — compute the probability of touching this level "
-             "at any time before each contract's expiration date.",
-    )
-
-    # Recompute on the fly with the user-specified KO price
-    rows = _ho_mod.compute_ko_probabilities(contracts, ko_price)
+    ho_spot = result.get("market_data", {}).get("HO", result.get("ho_price"))
+    k1, k2 = st.columns([1, 2])
+    ko_price = k1.number_input("KO Price ($/gal)", min_value=0.01, max_value=20.0,
+        value=float(result.get("ko_price_default", round(ho_spot * cfg.get("KO_DEFAULT_PCT_OF_SPOT"), 4))),
+        step=0.01, format="%.4f", key="ko_price_input",
+        help="Knock-Out barrier — probability of touching this level at any time before each contract's expiry.")
+    vmode = k2.radio("Volatility input", ["Implied (CME settlement / proxy)", "Realized (historical)"],
+                     horizontal=True, key="ko_vol_mode")
+    contracts = _contracts_with_vol(result, vctx, implied=vmode.startswith("Implied"))
+    base_rows = _ho_mod.compute_ko_probabilities(contracts, ko_price)
+    scen = [s for s in _scenarios(result) if s["name"] != "Base"]
+    md = result.get("market_data", {})
+    wti, crack = md.get("WTI"), md.get("crack_spread")
+    base_vol = _base_vol(result)
 
     direction = "BELOW" if ko_price < ho_spot else "ABOVE"
-    dist_pct  = abs(ko_price - ho_spot) / ho_spot * 100
-    st.caption(
-        f"KO **${ko_price:.4f}** — **{direction}** spot **${ho_spot:.4f}** "
-        f"({dist_pct:.1f}% away) · Ann. vol: **{ann_vol:.1f}%** · "
-        f"Model: GBM reflection principle, zero-drift (risk-neutral futures)"
-    )
+    st.caption(f"KO **${ko_price:.4f}** — **{direction}** front **${ho_spot:.4f}** "
+               f"({abs(ko_price-ho_spot)/ho_spot*100:.1f}% away) · GBM reflection principle, zero drift "
+               f"(risk-neutral futures) · scenarios shift each futures price by the scenario HO move and add the vol shock.")
+    rows, heat = [], []
+    for c, r in zip(contracts, base_rows):
+        sig_ann = c["sigma_daily"] * np.sqrt(252)
+        row = [(r["label"], "color:#1b2a3b;font-weight:600"), (r["expiry"], "color:#4e6880;"),
+               f'${r["fwd_price"]:.4f}' + ("" if c.get("price_source") != "estimated" else "*"),
+               f"{sig_ann*100:.1f}%", (c["vol_src"], "color:#4e6880;font-size:9px;"),
+               (f'{r["ko_prob"]:.1f}%', f'color:{_prob_color(r["ko_prob"])};font-weight:700;')]
+        hrow = [r["ko_prob"]]
+        for s in scen:
+            k, vr, vs = se.scenario_factors(ho_spot, wti, crack, base_vol, s)
+            sig_s = max(0.02, sig_ann + s["vol_pts"] / 100) / np.sqrt(252)
+            p = _ho_mod.barrier_touch_prob(c["fwd_price"] * k, ko_price, c["t_days"], sig_s) * 100
+            row.append((f"{p:.1f}%", f"color:{_prob_color(p)};"))
+            hrow.append(p)
+        rows.append(row); heat.append(hrow)
+    _html_table(["Contract", "Expiry", "Futures", "Vol", "Vol source", "P(KO) Base"] +
+                [f"P(KO) {s['name']}" for s in scen], rows)
+    if any(c.get("price_source") == "estimated" for c in contracts):
+        st.caption("* futures price estimated (contract quote unavailable)")
 
-    # ── Styled HTML table ─────────────────────────────────────────────────────
-    th = (
-        "padding:7px 14px;background:#eaeff6;color:#4e6880;"
-        "font-family:'JetBrains Mono',monospace;font-size:9px;"
-        "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #c4d0de;text-align:center;white-space:nowrap;"
-    )
-    td = (
-        "padding:6px 14px;font-family:'JetBrains Mono',monospace;"
-        "font-size:11px;border-bottom:1px solid #d8e2ee;text-align:center;"
-    )
+    fig = go.Figure(go.Heatmap(
+        z=heat, x=["Base"] + [s["name"] for s in scen], y=[c["label"] for c in contracts],
+        colorscale=[[0, "#eaf5ee"], [0.25, "#b9dcc5"], [0.5, "#e8c77f"], [0.75, "#d98a4a"], [1, "#b82828"]],
+        zmin=0, zmax=100, text=[[f"{v:.0f}%" for v in r] for r in heat], texttemplate="%{text}",
+        hovertemplate="%{y} · %{x}: %{z:.1f}%<extra></extra>",
+        colorbar=dict(title=dict(text="P(KO)", font=dict(size=9)), ticksuffix="%")))
+    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=420,
+        title=dict(text=f"P(Touch KO ${ko_price:.4f}) — Contract × Scenario", font=dict(size=11, color="#1b2a3b")),
+        yaxis=dict(autorange="reversed"), margin=dict(l=90, r=40, t=40, b=60))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_scen"))
 
-    headers = ["Contract", "Expiry", "Futures Price", "KO Price", "P(Touch KO)"]
-    head_html = "".join(f'<th style="{th}">{h}</th>' for h in headers)
-
-    body_html = ""
-    for r in rows:
-        prob = r["ko_prob"]
-        # Color scale: green (low risk) → orange → red (high risk)
-        if prob >= 75:
-            pc = "#b82828"
-        elif prob >= 50:
-            pc = "#987010"
-        elif prob >= 25:
-            pc = "#b87010"
-        else:
-            pc = "#1a7a45"
-        body_html += (
-            f'<tr>'
-            f'<td style="{td}color:#1b2a3b;font-weight:600">{r["label"]}</td>'
-            f'<td style="{td}color:#4e6880">{r["expiry"]}</td>'
-            f'<td style="{td}color:#1b2a3b">${r["fwd_price"]:.4f}</td>'
-            f'<td style="{td}color:#5438a0">${r["ko_price"]:.4f}</td>'
-            f'<td style="{td}color:{pc};font-weight:700">{prob:.1f}%</td>'
-            f'</tr>'
-        )
-
-    st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
-        f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
-        unsafe_allow_html=True,
-    )
-
-    # ── Bar chart — P(KO) by contract ─────────────────────────────────────────
-    labels = [r["label"] for r in rows]
-    probs  = [r["ko_prob"] for r in rows]
-    colors = [
-        "#b82828" if p >= 75 else
-        "#987010" if p >= 50 else
-        "#b87010" if p >= 25 else
-        "#1a7a45"
-        for p in probs
-    ]
-    y_max = min(110, max(probs) * 1.25) if probs else 110
-
-    fig = go.Figure(go.Bar(
-        x=labels, y=probs,
-        marker_color=colors,
-        text=[f"{p:.1f}%" for p in probs],
-        textposition="outside",
-        hovertemplate="%{x}: %{y:.1f}%<extra></extra>",
-    ))
-    fig.update_layout(
-        template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=240,
-        title=dict(
-            text=f"P(Touch KO ${ko_price:.4f}) by Contract",
-            font=dict(size=10, color="#1b2a3b")),
-        yaxis=dict(title="Probability (%)", ticksuffix="%", range=[0, y_max]),
-        xaxis=dict(title="Contract"),
-        showlegend=False, bargap=0.2, margin=dict(l=50, r=20, t=40, b=40),
-    )
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_bar"))
+    # ── Price-shock × vol grid for one contract ──────────────────────────────
+    st.markdown("**KO sensitivity map** — probability across price moves and implied-vol levels")
+    lbl = st.selectbox("Contract", [c["label"] for c in contracts], key="ko_grid_contract")
+    c = next(x for x in contracts if x["label"] == lbl)
+    sig_ann = c["sigma_daily"] * np.sqrt(252)
+    n = int(cfg.get("KO_GRID_POINTS"))
+    move = 2 * sig_ann * np.sqrt(c["t_days"] / 252)
+    shocks = np.linspace(-move, move, n)
+    rets = np.asarray(result.get("returns", []))
+    rv_roll = [np.std(rets[i-30:i], ddof=1)*np.sqrt(252) for i in range(30, len(rets)+1)] if len(rets) > 35 else [sig_ann]
+    v_lo = min(float(np.percentile(rv_roll, 5)), sig_ann); v_hi = max(float(np.percentile(rv_roll, 95)), sig_ann)
+    vols = np.linspace(max(0.02, v_lo), v_hi, n)
+    z = [[_ho_mod.barrier_touch_prob(c["fwd_price"]*(1+x), ko_price, c["t_days"], v/np.sqrt(252))*100
+          for x in shocks] for v in vols]
+    fig = go.Figure(go.Heatmap(z=z, x=[f"{x*100:+.0f}%" for x in shocks], y=[f"{v*100:.0f}%" for v in vols],
+        colorscale=[[0, "#eaf5ee"], [0.5, "#e8c77f"], [1, "#b82828"]], zmin=0, zmax=100,
+        text=[[f"{v:.0f}" for v in r] for r in z], texttemplate="%{text}",
+        hovertemplate="Price move %{x} · vol %{y}: %{z:.1f}%<extra></extra>",
+        colorbar=dict(title=dict(text="P(KO)", font=dict(size=9)), ticksuffix="%")))
+    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=380,
+        title=dict(text=f"{lbl}: P(KO) by immediate futures move (±2σ) × vol (historical 5th–95th pct range)",
+                   font=dict(size=11, color="#1b2a3b")),
+        xaxis=dict(title="Immediate futures price move"), yaxis=dict(title="Annualised vol"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_grid"))
+    st.caption(f"Current: futures ${c['fwd_price']:.4f}, vol {sig_ann*100:.1f}% ({c['vol_src']}), "
+               f"{c['t_days']} trading days to expiry.")
 
 
 # ── ⑤B PROBABILITY AT EXPIRATION TABLE ───────────────────────────────────────
-def render_expiry_distribution_table(result, agent):
+def render_expiry_distribution_table(result, agent, vctx=None):
     """
     Table 2: Probability at Expiration — 12-Month Forward.
     Rows: 13 monthly contracts.
@@ -1096,7 +1423,7 @@ def render_expiry_distribution_table(result, agent):
     r_arr     = np.array(result.get("returns", []))
     sig_daily = float(np.std(r_arr, ddof=1)) if len(r_arr) > 5 else 0.015
     sig_daily = min(sig_daily, 0.80 / np.sqrt(252))
-    ho_spot   = result.get("market_data", {}).get("HO", result.get("ho_price", 3.5))
+    ho_spot   = result.get("market_data", {}).get("HO", result.get("ho_price"))
 
     # ── Mode selector ─────────────────────────────────────────────────────────
     mode = st.radio(
@@ -1130,10 +1457,16 @@ def render_expiry_distribution_table(result, agent):
         )
         bin_edges = [-np.inf] + list(thresholds) + [np.inf]
     else:
-        bin_edges  = _ho_mod.DISPLAY_BIN_EDGES
-        bin_labels = _ho_mod.DISPLAY_BIN_LABELS
+        mid_t = int(np.median([c["t_days"] for c in contracts]))
+        _e = _ho_mod.make_display_edges(ho_spot, sig_daily, mid_t,
+                                        st.session_state.get("pt_sigma"), st.session_state.get("pt_bins"))
+        bin_edges  = [-np.inf] + _e + [np.inf]
+        bin_labels = _ho_mod.edge_labels(_e)
 
-    # Recompute distributions with the selected bins
+    # Implied vol per contract when available (CME settlement -> proxy), else realized
+    contracts = _contracts_with_vol(result, vctx, implied=True)
+    st.caption("Vol per contract: " + ", ".join(sorted({c["vol_src"] or "Realized" for c in contracts})) +
+               " · predefined ranges follow the Section 03 range/bin settings")
     fresh_rows = _ho_mod.compute_expiry_distributions(
         contracts, sig_daily, bin_edges, bin_labels
     )
@@ -1238,12 +1571,12 @@ def render_expiry_distribution_table(result, agent):
 
 # ── ⑥ SCENARIO ────────────────────────────────────────────────────────────────
 def render_scenario(result, agent, sel_scen):
-    section("10","SCENARIO SIMULATION","Dynamic signals: crack spread · VIX · EIA · seasonal")
+    section("10","SCENARIO SIMULATION","Paths driven by the Section 03B numeric scenario shocks")
     sp   = result.get("scenario_paths",{})
     ho   = agent=="ho"
     md   = result.get("market_data",{})
     f    = result.get("forecast",{})
-    spot = md.get("HO",result.get("ho_price",3.5)) if ho else f.get("current_wti",result.get("wti",80))
+    spot = md.get("HO",result.get("ho_price")) if ho else f.get("current_wti",result.get("wti"))
     sigs = result.get("scenario_signals",{})
     if ho and sigs:
         sc1,sc2,sc3,sc4,sc5 = st.columns(5)
@@ -1253,14 +1586,16 @@ def render_scenario(result, agent, sel_scen):
         sc2.metric("VIX Vol Mult", f"{sigs.get('vix_vol_mult',1):.2f}×",
             help="VIX current ÷ 20d rolling mean — scales scenario volatility")
         sc3.metric("Crack Signal", f"{sigs.get('crack_signal_ann',0):+.2f}%",
-            help="Crack spread above/below $15 threshold (annualised drift contribution)")
+            help=f"Crack vs its 1-year median ${sigs.get('crack_median',0):.2f}/bbl (annualised drift contribution)")
         sc4.metric("Seasonal Signal", f"{sigs.get('seasonal_signal_ann',0):+.2f}%",
-            help="Heating season (Nov–Mar) = bullish, summer = bearish")
-        sc5.metric("EIA Signal", f"{sigs.get('eia_signal_ann',0):+.2f}%",
-            help="Weekly inventory draw (+) or build (−) contribution")
-        sig_names  = ["Crack Spread","VIX","EIA Inventory","Seasonal"]
+            help="This calendar month's historical average vs the 1-year average")
+        eia_on = sigs.get("eia_enabled", False)
+        sc5.metric("EIA Signal", f"{sigs.get('eia_signal_ann',0):+.2f}%" if eia_on else "Off",
+            help="Weekly inventory draw (+) or build (−) contribution" if eia_on
+                 else "EIA inventory disabled (EIA_ENABLED=false)")
+        sig_names  = ["Crack Spread","VIX","Seasonal"] + (["EIA Inventory"] if eia_on else [])
         sig_values = [sigs.get("crack_signal_ann",0),sigs.get("vix_signal_ann",0),
-                      sigs.get("eia_signal_ann",0),sigs.get("seasonal_signal_ann",0)]
+                      sigs.get("seasonal_signal_ann",0)] + ([sigs.get("eia_signal_ann",0)] if eia_on else [])
         sig_colors = ["#1a7a45" if v>=0 else "#b82828" for v in sig_values]
         fig_sig = go.Figure(go.Bar(
             x=sig_names, y=sig_values, marker_color=sig_colors,
@@ -1316,8 +1651,7 @@ def render_scenario(result, agent, sel_scen):
     c1,c2 = st.columns(2)
     with c1:
         names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
-        _DIM=["rgba(23,88,176,.2)","rgba(152,112,16,.2)","rgba(200,85,45,.2)","rgba(184,40,40,.2)","rgba(84,56,160,.2)"]
-        cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else _DIM[i%5] for i,n in enumerate(names_s)]
+        cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else "rgba(122,146,168,.25)" for i,n in enumerate(names_s)]
         fig=go.Figure(go.Bar(x=names_s,y=finals,marker_color=cols_s,
             text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in finals],textposition="outside"))
         fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=240,
@@ -1748,6 +2082,247 @@ def render_var_es(result, agent):
         (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
 
 
+# ── ⑤B FORWARD CURVE & CALENDAR SPREADS ─────────────────────────────────────
+def render_curve_spreads(result):
+    section("05B", "FORWARD CURVE & INTER-MONTH SPREADS",
+            f"Source: {result.get('curve_source', 'n/a')} · spread = near − far (positive = backwardation)")
+    contracts = result.get("ho_contracts", [])
+    if not contracts:
+        st.info("Forward curve unavailable.")
+        return
+    if all(c.get("price_source") == "estimated" for c in contracts):
+        st.warning("Contract quotes unavailable — curve shown flat at the front price; spreads hidden.")
+    lbl = [c["label"] for c in contracts]
+    px  = [c["fwd_price"] for c in contracts]
+    c1, c2 = st.columns(2)
+    with c1:
+        fig = go.Figure(go.Scatter(x=lbl, y=px, mode="lines+markers", line=dict(color="#b87010", width=2),
+            marker=dict(size=7, color=["#b87010" if c.get("price_source") != "estimated" else "#c4d0de" for c in contracts]),
+            hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
+        fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+            title=dict(text="HO Futures Curve ($/gal)", font=dict(size=11, color="#1b2a3b")),
+            yaxis=dict(tickformat="$.4f"), showlegend=False)
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("curve"))
+    spreads = ve.calendar_spreads(contracts)
+    with c2:
+        if spreads:
+            vals = [x["spread"]*100 for x in spreads]
+            fig = go.Figure(go.Bar(x=[x["pair"] for x in spreads], y=vals,
+                marker_color=["#1a7a45" if v >= 0 else "#b82828" for v in vals],
+                text=[f"{v:+.2f}¢" for v in vals], textposition="outside",
+                hovertemplate="%{x}: %{y:+.2f}¢/gal<extra></extra>"))
+            fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
+            fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+                title=dict(text="Consecutive-Month Spreads (¢/gal)", font=dict(size=11, color="#1b2a3b")),
+                yaxis=dict(title="¢/gal"), showlegend=False, bargap=0.25)
+            st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("spreads"))
+    if spreads:
+        pairs = [f"{a['label']} / {b['label']}" for a, b in zip(contracts[:-1], contracts[1:])]
+        pick = st.selectbox("Spread history", pairs, index=0, key="spread_pick")
+        i = pairs.index(pick)
+        h = ve.spread_history(contracts[i], contracts[i+1])
+        if not h.empty:
+            fig = go.Figure(go.Scatter(x=h["date"], y=h["spread"]*100, mode="lines",
+                line=dict(color="#5438a0", width=2), fill="tozeroy", fillcolor="rgba(84,56,160,.07)",
+                hovertemplate="%{x|%Y-%m-%d}: %{y:+.2f}¢<extra></extra>"))
+            fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
+            fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
+                title=dict(text=f"{pick} spread history (¢/gal)", font=dict(size=11, color="#1b2a3b")),
+                yaxis=dict(title="¢/gal"), showlegend=False)
+            st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("spread_hist"))
+            st.caption(f"Current {h['spread'].iloc[-1]*100:+.2f}¢ · 1Y range {h['spread'].min()*100:+.2f}¢ "
+                       f"to {h['spread'].max()*100:+.2f}¢ · percentile "
+                       f"{(h['spread'] <= h['spread'].iloc[-1]).mean()*100:.0f}th")
+        else:
+            st.caption("Not enough overlapping history for this pair.")
+
+
+# ── ⑥B CHICAGO BASIS & BRAZIL PPI ───────────────────────────────────────────
+def _input_form(fields, key, allow_csv_field=None):
+    """Admin data entry for manual market inputs (persisted, versioned in the store)."""
+    with st.form(key, clear_on_submit=False):
+        d = st.date_input("Effective date", value=datetime.date.today(), key=f"{key}_d")
+        vals = {}
+        for f in fields:
+            label, unit = fs.INPUT_FIELDS[f]
+            vals[f] = st.number_input(f"{label} ({unit})", value=None, format="%.4f", key=f"{key}_{f}")
+        note = st.text_input("Source / note", max_chars=200, key=f"{key}_n")
+        up = st.file_uploader(f"…or CSV history (columns: date, value)", type=["csv"], key=f"{key}_csv") \
+            if allow_csv_field else None
+        if st.form_submit_button("Save"):
+            rows = [{"date": d, "field": f, "value": v, "note": sanitize_str(note)}
+                    for f, v in vals.items() if v is not None]
+            if up is not None:
+                try:
+                    df = pd.read_csv(up)
+                    cols = {c.lower().strip(): c for c in df.columns}
+                    rows += [{"date": r[cols["date"]], "field": allow_csv_field, "value": r[cols["value"]],
+                              "note": "csv upload"} for _, r in df.iterrows()]
+                except Exception as e:
+                    st.error(f"CSV not read: {sanitize_str(str(e))}")
+            n = fs.save_market_inputs(rows, user=st.session_state.get("auth_user", "")) if rows else 0
+            _clear_store_caches()
+            (st.success if n else st.warning)(f"Saved {n} value(s)." if n else "Nothing saved.")
+
+
+def render_basis_ppi(result):
+    section("06B", "CHICAGO BASIS & BRAZIL PPI",
+            "Chicago ULSD vs NYMEX HO · Petrobras vs import parity (PPI)")
+    inputs = _load_inputs()
+    ho = result["ho_price"]
+    tab_chi, tab_br = st.tabs(["Chicago basis", "Brazil PPI vs Petrobras"])
+    with tab_chi:
+        basis, bdate = fs.latest_input(inputs, "chicago_basis_cpg")
+        if basis is None:
+            st.info("No Chicago basis stored yet. Chicago ULSD basis comes from OPIS/Argus/broker quotes — "
+                    "an admin can enter it below (history is kept for the track record).")
+        else:
+            c = st.columns(3)
+            c[0].metric("Chicago basis", f"{basis:+.2f}¢/gal", help=f"As of {bdate}")
+            c[1].metric("NYMEX HO front", f"${ho:.4f}")
+            c[2].metric("Chicago implied price", f"${ho + basis/100:.4f}/gal")
+            hist = inputs[inputs["field"] == "chicago_basis_cpg"]
+            if len(hist) > 1:
+                fig = go.Figure(go.Scatter(x=pd.to_datetime(hist["date"]), y=hist["value"], mode="lines+markers",
+                    line=dict(color="#1758b0", width=2, shape="hv"), hovertemplate="%{x|%Y-%m-%d}: %{y:+.2f}¢<extra></extra>"))
+                fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
+                fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
+                    title=dict(text="Chicago ULSD Basis History (¢/gal vs NYMEX HO)", font=dict(size=11, color="#1b2a3b")),
+                    yaxis=dict(title="¢/gal"), showlegend=False)
+                st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("chi_basis"))
+        if _is_admin():
+            with st.expander("Admin — enter Chicago basis", expanded=False):
+                _input_form(["chicago_basis_cpg"], "form_chi", allow_csv_field="chicago_basis_cpg")
+    with tab_br:
+        usdbrl = result.get("market_data", {}).get("USDBRL")
+        params = {k: _param(inputs, k) for k in ("PPI_GULF_BASIS_USD_GAL", "PPI_FREIGHT_USD_GAL",
+                                                 "PPI_PORT_COSTS_USD_GAL", "PPI_INTERNAL_BRL_L")}
+        if not usdbrl:
+            st.warning("USD/BRL unavailable — PPI cannot be computed this run.")
+        else:
+            ppi = ve.ppi_brl_per_liter(ho, usdbrl, params)
+            pb, pdate = fs.latest_input(inputs, "petrobras_diesel_brl_l")
+            c = st.columns(4)
+            c[0].metric("PPI (import parity)", f"R$ {ppi:.4f}/L")
+            c[1].metric("USD/BRL", f"{usdbrl:.4f}")
+            c[2].metric("Petrobras diesel A", f"R$ {pb:.4f}/L" if pb else "—", help=f"As of {pdate}" if pdate else "Not entered")
+            if pb:
+                gap = (pb / ppi - 1) * 100
+                c[3].metric("Petrobras vs PPI", f"{gap:+.1f}%",
+                            help="Negative = Petrobras sells below import parity (import window closed)")
+            if all(v == 0 for k, v in params.items()):
+                st.warning("PPI logistics components are all zero — the figure is the NYMEX FOB parity only. "
+                           "Enter USGC basis, freight, port and internal costs below (or in Secrets).")
+            _html_table(["Component", "Value"], [
+                ["NYMEX HO front", f"${ho:.4f}/gal"],
+                ["+ USGC basis", f"${params['PPI_GULF_BASIS_USD_GAL']:.4f}/gal"],
+                ["+ Ocean freight", f"${params['PPI_FREIGHT_USD_GAL']:.4f}/gal"],
+                ["+ Port / insurance / losses", f"${params['PPI_PORT_COSTS_USD_GAL']:.4f}/gal"],
+                ["× USD/BRL ÷ L/gal", f"{usdbrl:.4f} ÷ {cfg.LITERS_PER_GALLON:.4f}"],
+                ["+ Internal logistics", f"R$ {params['PPI_INTERNAL_BRL_L']:.4f}/L"],
+                [("= PPI", "font-weight:700;"), (f"R$ {ppi:.4f}/L", "font-weight:700;color:#b87010;")]])
+            hh = pd.DataFrame(result.get("history", [])); bh = pd.DataFrame(result.get("usdbrl_history", []))
+            if not hh.empty and not bh.empty:
+                m = hh.merge(bh, on="date", suffixes=("_ho", "_brl"))
+                m["ppi"] = [ve.ppi_brl_per_liter(a, b, params) for a, b in zip(m["price_ho"], m["price_brl"])]
+                m["date"] = pd.to_datetime(m["date"])
+                fig = go.Figure(go.Scatter(x=m["date"], y=m["ppi"], mode="lines", name="PPI (current cost params)",
+                    line=dict(color="#b87010", width=2), hovertemplate="%{x|%Y-%m-%d}: R$ %{y:.4f}<extra>PPI</extra>"))
+                ph = inputs[inputs["field"] == "petrobras_diesel_brl_l"] if not inputs.empty else pd.DataFrame()
+                if not ph.empty:
+                    fig.add_trace(go.Scatter(x=pd.to_datetime(ph["date"]), y=ph["value"], mode="lines+markers",
+                        name="Petrobras", line=dict(color="#1a7a45", width=2, shape="hv"),
+                        hovertemplate="%{x|%Y-%m-%d}: R$ %{y:.4f}<extra>Petrobras</extra>"))
+                fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+                    title=dict(text="Diesel PPI vs Petrobras price (R$/L)", font=dict(size=11, color="#1b2a3b")),
+                    yaxis=dict(title="R$/L"), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ppi"))
+        if _is_admin():
+            with st.expander("Admin — Petrobras price & PPI cost components", expanded=False):
+                _input_form(["petrobras_diesel_brl_l", "PPI_GULF_BASIS_USD_GAL", "PPI_FREIGHT_USD_GAL",
+                             "PPI_PORT_COSTS_USD_GAL", "PPI_INTERNAL_BRL_L"], "form_ppi",
+                            allow_csv_field="petrobras_diesel_brl_l")
+
+
+# ── ⑫ FORECAST TRACK RECORD ──────────────────────────────────────────────────
+def render_track_record(result, vctx):
+    section("12", "FORECAST TRACK RECORD",
+            "Every day's first forecast is stored immutably and scored against what actually happened")
+    ss = _store_status()
+    snap = st.session_state.get("_snap_res")
+    if not ss.get("persistent"):
+        st.warning(f"Store: {ss.get('backend')}. {ss.get('detail')}")
+    elif not ss.get("ok"):
+        st.error(f"Store unreachable: {ss.get('detail')}")
+    else:
+        st.caption(f"Store: **{ss.get('backend')}** · today's save: "
+                   + (f"{snap.get('forecasts', 0)} forecast rows, {snap.get('curves', 0)} curve rows"
+                      if snap and "error" not in snap else "already recorded / not run" if not snap
+                      else f"error {snap.get('error')}"))
+    if _is_admin() and st.button("Save today's snapshot now", key="snap_now"):
+        res = _autosave_snapshot(result, vctx, force=True)
+        st.success(f"Saved: {res}")
+    fc = _load_forecasts()
+    if fc.empty:
+        st.info("No forecasts stored yet — the first snapshot is written on today's HO run.")
+        return
+    fh = _front_history_long()
+    hist_now = pd.DataFrame(result.get("history", []))
+    fh = pd.concat([fh, hist_now]).drop_duplicates("date", keep="last") if not fh.empty else hist_now
+    ev = fs.evaluate_forecasts(fc, fh, _load_curves())
+    sm = fs.track_record_summary(ev)
+    m = st.columns(6)
+    m[0].metric("Forecasts stored", f"{sm.get('total', 0):,}")
+    m[1].metric("Evaluated", f"{sm.get('evaluated', 0):,}")
+    m[2].metric("Pending", f"{sm.get('pending', 0):,}")
+    m[3].metric("Hit rate 80% range", _fmt_pct(sm.get("cov80")), help="Share of outcomes inside the p10–p90 range. Well-calibrated ≈ 80%.")
+    m[4].metric("Hit rate 90% range", _fmt_pct(sm.get("cov90")), help="p05–p95 range. Well-calibrated ≈ 90%.")
+    m[5].metric("Median abs error", f"${sm['mae']:.4f}" if sm.get("mae") is not None else "—")
+    k1, k2 = st.columns(2)
+    kind = k1.radio("Forecast type", ["contract", "horizon"], horizontal=True, key="tr_kind",
+                    format_func=lambda x: "Contract settlement (e.g. Nov range)" if x == "contract" else "Front-month horizon")
+    sub = ev[ev["kind"] == kind]
+    targets = sorted(sub["target"].unique(), key=lambda t: str(sub[sub["target"] == t]["target_date"].iloc[0]))
+    if not targets:
+        return
+    tgt = k2.selectbox("Target", targets, key="tr_target")
+    d = sub[sub["target"] == tgt].sort_values("forecast_date")
+    fig = go.Figure()
+    x = pd.to_datetime(d["forecast_date"])
+    fig.add_trace(go.Scatter(x=list(x)+list(x[::-1]), y=list(d["p95"])+list(d["p05"][::-1]), fill="toself",
+        fillcolor="rgba(23,88,176,.08)", line=dict(width=0), name="90% range", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=list(x)+list(x[::-1]), y=list(d["p90"])+list(d["p10"][::-1]), fill="toself",
+        fillcolor="rgba(23,88,176,.18)", line=dict(width=0), name="80% range", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=d["p50"], mode="lines+markers", line=dict(color="#1758b0", width=2),
+        marker=dict(size=4), name="Forecast median",
+        hovertemplate="Forecast %{x|%Y-%m-%d}: median $%{y:.4f}<extra></extra>"))
+    real = d.dropna(subset=["realized"])
+    if not real.empty:
+        fig.add_trace(go.Scatter(x=x.loc[real.index], y=real["realized"], mode="markers",
+            marker=dict(size=9, symbol="star", color=["#1a7a45" if v == 1 else "#b82828" for v in real["in_80"]]),
+            name="Realized (green = inside 80%)", hovertemplate="Realized $%{y:.4f}<extra></extra>"))
+    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=320,
+        title=dict(text=f"{tgt}: forecast ranges by forecast date vs realized outcome "
+                        f"(target {d['target_date'].iloc[-1]})", font=dict(size=11, color="#1b2a3b")),
+        yaxis=dict(tickformat="$.4f"), xaxis=dict(title="Forecast date"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("track"))
+    show = ev.sort_values(["forecast_date", "kind", "target_date"], ascending=[False, True, True]).head(60)
+    rows = []
+    for _, r in show.iterrows():
+        hit = r["in_80"]
+        rows.append([r["forecast_date"], r["kind"], r["target"], r["target_date"], f"${r['ref_price']:.4f}",
+                     f"${r['p10']:.4f} – ${r['p90']:.4f}", f"${r['p50']:.4f}",
+                     f"${r['realized']:.4f}" if pd.notna(r["realized"]) else "—",
+                     ("✓" if hit == 1 else "✗" if hit == 0 else r["status"],
+                      f"color:{'#1a7a45' if hit == 1 else '#b82828' if hit == 0 else '#7a92a8'};font-weight:700;")])
+    with st.expander("Forecast log (latest 60)", expanded=False):
+        _html_table(["Made", "Type", "Target", "Target date", "Ref price", "80% range", "Median",
+                     "Realized", "In 80%?"], rows)
+    st.download_button("Download full track record (CSV)", ev.to_csv(index=False).encode(),
+                       file_name=f"ho_track_record_{datetime.date.today()}.csv", mime="text/csv", key="tr_dl")
+
+
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 def render_sidebar():
     st.sidebar.markdown("""
@@ -1838,8 +2413,8 @@ def render_sidebar():
         sel_r=st.sidebar.selectbox("Region",reg_opts,index=0 if not st.session_state.sel_region else
             (reg_opts.index(st.session_state.sel_region) if st.session_state.sel_region in reg_opts else 0))
         st.session_state.sel_region=None if sel_r=="(All)" else sanitize_str(sel_r)
-        rows=result.get("prob_table",{}).get(h,[])
-        bins=["(All)"]+[r[0] for r in rows]
+        _e,_labels,_t = display_prob_table(result, h)
+        bins=["(All)"]+list(_labels)
         sel_b=st.sidebar.selectbox("Price Bin",bins,index=0 if not st.session_state.sel_bin else
             (bins.index(st.session_state.sel_bin) if st.session_state.sel_bin in bins else 0))
         st.session_state.sel_bin=None if sel_b=="(All)" else sanitize_str(sel_b)
@@ -1848,6 +2423,10 @@ def render_sidebar():
             st.rerun()
     if st.session_state.get("auth_is_admin"):
         render_admin_panel()
+    if result and result.get("agent") == "ho":
+        _ss = _store_status()
+        st.sidebar.caption(("Track record store: " if _ss.get("persistent") else "Track record store (NOT persistent): ")
+                           + f"{_ss.get('backend')} — {_ss.get('detail')}")
     st.sidebar.divider()
     st.sidebar.markdown("""
     <div style="font-size:9px;color:#7a92a8;font-family:'JetBrains Mono',monospace;line-height:1.8">
@@ -1881,29 +2460,41 @@ def render_dashboard():
         </div>""",unsafe_allow_html=True)
         return
     ho = agent == "ho"
-    # Section order (v3.2):
-    # 01 Snapshot · 02 Price History · 03 Prob Distribution
-    # 04 KO Prob · 04B Expiry Dist · 05 Volatility · 06 Crack Spread
-    # 07 EIA Inventory · 08 Seasonal · 09 VaR · 10 Scenario · 11 Regional Map
+    # Section order (v4.0):
+    # 01 Snapshot · 02 Price History · 03 Prob Distribution · 03B Scenario Impact
+    # 04 KO Prob · 04B Expiry Dist · 05 Volatility · 05B Curve & Spreads · 06 Crack
+    # 06B Chicago basis & Brazil PPI · 07 EIA (flag) · 08 Seasonal · 09 VaR
+    # 10 Scenario paths · 11 Regional Map · 12 Track Record
+    vctx = None
+    if ho:
+        vctx = build_vol_context(result, result.get("run_dir", ""))
+        _autosave_snapshot(result, vctx)
     render_snapshot(result, agent)
     render_price_history(result, agent)
     render_prob_dist(result, agent, sel_h, sel_bin)
     if ho:
-        render_ko_table(result, agent)
-        render_expiry_distribution_table(result, agent)
-    render_volatility(result)
+        render_scenario_impact(result, sel_h)
+        render_ko_table(result, agent, vctx)
+        render_expiry_distribution_table(result, agent, vctx)
+    render_volatility(result, vctx)
     if ho:
+        render_curve_spreads(result)
         render_crack_spread(result, agent)
-        render_eia_deep_dive(result)
+        render_basis_ppi(result)
+        if cfg.get("EIA_ENABLED"):
+            render_eia_deep_dive(result)
         render_seasonal_pattern(result, agent)
         render_var_es(result, agent)
     render_scenario(result, agent, sel_scen)
     render_regional(result, agent, sel_reg)
+    if ho:
+        render_track_record(result, vctx)
     section("--","MARKET SUMMARY")
     with st.expander("View full summary",expanded=False):
         st.code(result.get("summary",""),language=None)
     with st.expander("Run log",expanded=False):
-        st.markdown('<div class="status-box">'+"\n".join(st.session_state.log or [])+"</div>",
+        _vlog = (vctx or {}).get("log", []) if ho else []
+        st.markdown('<div class="status-box">'+html.escape("\n".join((st.session_state.log or []) + _vlog))+"</div>",
             unsafe_allow_html=True)
     with st.expander("Security audit",expanded=False):
         st.code(security_audit_report(),language=None)
