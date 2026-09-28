@@ -11,6 +11,7 @@ requests
 python-dotenv
 matplotlib
 scipy
+openpyxl       # Excel (.xlsx) uploads of CME vol files
 
 # Authentication
 pyotp          # TOTP two-factor authentication
