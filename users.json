@@ -60,6 +60,16 @@
       "totp_secret": "JKZO6C3GYQHXOSEITBIUKR5XIVKOGHQQ",
       "totp_enabled": false,
       "created_at": "2026-09-03"
+    },
+    {
+      "login": "Kareem Daher",
+      "password_hash": "26a12d47aacbabe75e64c6d1f38d6aa48d736252ffc4943e2feeee962ce62412",
+      "salt": "5147794996551930f6beee260ddd922a",
+      "is_admin": false,
+      "is_active": true,
+      "totp_secret": "3TPRUQQPOTJJK6FYSDOBS6D7UCY5C37R",
+      "totp_enabled": false,
+      "created_at": "2026-10-28"
     }
   ]
 }
