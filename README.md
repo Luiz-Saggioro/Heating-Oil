@@ -1,4 +1,4 @@
-# Energy Intelligence Dashboard (v4.0)
+# Energy Intelligence Dashboard (v4.1)
 
 Deterministic commodity probability engine for **Heating Oil (HO)** and **WTI Crude**.
 Streamlit app, auto-deployed from `main` to Streamlit Cloud.
@@ -14,6 +14,7 @@ Streamlit app, auto-deployed from `main` to Streamlit Cloud.
 ├── scenario_engine.py  ← Numeric what-if shocks → shifted probability distribution
 ├── forecast_store.py   ← Persistent forecast track record (GitHub `data` branch)
 ├── config.py           ← All knobs & feature flags (overridable in Secrets)
+├── theme.py            ← Light/dark palettes, global CSS, Plotly templates (no colours elsewhere)
 ├── users.json / manage_users.py ← Login + 2FA
 └── .streamlit/secrets.toml.example ← Template for Streamlit Cloud Secrets
 ```
@@ -27,25 +28,30 @@ FORECAST_GITHUB_TOKEN = "github_pat_..."   # fine-grained PAT: this repo only, C
 ```
 
 Without it the app still runs, but forecasts are saved to local disk only (wiped on restart)
-and a warning is shown in section 12 and the sidebar.
+and a warning is shown in the Track Record tab and the sidebar.
 
-## Dashboard sections
+## Dashboard layout (v4.1 — one tab per measure)
 
-| # | Section | Notes |
-|---|---------|-------|
-| 01 | Snapshot | Live prices (30 s refresh) |
-| 02 | Price History | Front contract |
-| 03 | Probability Distribution | Range = ± N σ of the selected horizon, bin count adjustable, manual override |
-| 03B | Scenario Impact | Editable numeric shocks (WTI %, crack $/bbl, vol pts) → probabilities, EV, 80 % range, P(< / >) |
-| 04 | KO Probability | Implied vol per contract, P(KO) per scenario, price × vol sensitivity map |
-| 04B | Probability at Expiration | Per-contract settlement distribution using implied vol |
-| 05 | Volatility | ATM implied vs realized (10/20/30d), term structure by month, vol by strike |
-| 05B | Forward Curve & Spreads | Real NYMEX contracts, consecutive-month spreads + history |
-| 06 | Crack Spread | |
-| 06B | Chicago Basis & Brazil PPI | Admin-entered basis / Petrobras price, computed import parity |
-| 07 | EIA Inventory | **Off** by default — `EIA_ENABLED = true` in Secrets to turn back on |
-| 08–11 | Seasonal, VaR, Scenario paths, Regional map | |
-| 12 | Forecast Track Record | Daily immutable snapshots + hit rates vs realized |
+The Snapshot KPI strip sits above the tabs. Charts are grouped by what they measure;
+categories with several measures get a second row of sub-tabs. Layout is declared in
+`_dashboard_layout()` in `streamlit_app.py` — edit that list to move a section.
+
+| Tab | Sub-tabs | Notes |
+|-----|----------|-------|
+| Prices & Averages | Price history & moving avg · Seasonal monthly averages | Front contract; MA window adapts to period |
+| Probabilities | Price distribution & EV · Scenario impact · KO by contract · At expiration | Range = ± N σ of horizon; editable shocks (WTI %, crack $/bbl, vol pts) |
+| Volatility & Risk (SD) | Volatility (std. dev.) · VaR & Expected Shortfall | ATM implied vs realized (10/20/30d), term structure, vol by strike |
+| Curves & Spreads | Forward curve & calendar spreads · Crack spread · Chicago basis & Brazil PPI · EIA inventory | EIA **off** by default (`EIA_ENABLED = true` in Secrets) |
+| Scenarios | — | Paths driven by the Scenario impact shocks |
+| Regional | — | US / Brazil maps |
+| Track Record | — | Daily immutable snapshots + hit rates vs realized |
+| Summary & Logs | — | Market summary, run log, security audit |
+
+Oil (WTI) runs show only the tabs that apply to that engine.
+
+**Display mode:** sidebar *Dark mode* toggle (first visit follows the browser/Streamlit theme).
+All colours come from `theme.py`; text meets WCAG AA contrast in both modes. Tables built with
+`st.data_editor` keep Streamlit's own grid colours (not stylable via CSS).
 
 ## Data sources & fallbacks
 
