@@ -36,7 +36,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import plotly.io as pio
 from plotly.subplots import make_subplots
 import datetime
 import os
@@ -45,6 +44,7 @@ import config as cfg
 import forecast_store as fs
 import vol_engine as ve
 import scenario_engine as se
+import theme
 import json
 import hashlib
 # 30-second auto-refresh for live market data (Snapshot + Price History)
@@ -232,16 +232,16 @@ _AUTH_CSS = """
 <style>
 .auth-wrap{max-width:400px;margin:80px auto;}
 .auth-card{
-  padding:40px 36px;background:#ffffff;
-  border:1px solid #c4d0de;border-radius:12px;
+  padding:40px 36px;background:var(--panel);
+  border:1px solid var(--border);border-radius:12px;
   box-shadow:0 4px 24px rgba(0,0,0,0.09);
 }
 .auth-title{
-  font-size:22px;font-weight:800;color:#1b2a3b;
+  font-size:22px;font-weight:800;color:var(--ink);
   font-family:'Syne',sans-serif;margin-bottom:4px;
 }
 .auth-sub{
-  font-size:11px;color:#4e6880;
+  font-size:11px;color:var(--muted);
   font-family:'JetBrains Mono',monospace;
   letter-spacing:1.2px;text-transform:uppercase;margin-bottom:28px;
 }
@@ -438,52 +438,22 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 # ── THEME / CSS ───────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Syne:wght@600;700;800&display=swap');
-html,body,[class*="css"]{font-family:'Syne',sans-serif;}
-code,.stCode,pre{font-family:'JetBrains Mono',monospace!important;}
-.stApp{background:#f0f4f8!important;}
-.stPlotlyChart{background:transparent!important;}
-.stPlotlyChart>div{background:transparent!important;}
-div[data-testid="stPlotlyChart"]{background:transparent!important;}
-div[data-testid="block-container"]{background:transparent!important;}
-div[data-testid="stVerticalBlock"]{background:transparent!important;}
-div[data-testid="column"]{background:transparent!important;}
-div[data-testid="stHorizontalBlock"]{background:transparent!important;}
-.element-container{background:transparent!important;}
-section[data-testid="stSidebar"]{background:#1b2a3b;border-right:1px solid #26394d;}
-section[data-testid="stSidebar"] .stMarkdown{color:#c8d8ea;}
-section[data-testid="stSidebar"] label{color:#8aaac4!important;}
-section[data-testid="stSidebar"] p{color:#c8d8ea!important;}
-div[data-testid="metric-container"]{background:#ffffff;border:1px solid #c4d0de;border-radius:8px;padding:14px 18px;transition:border-color .2s;box-shadow:0 1px 4px rgba(0,0,0,0.06);}
-div[data-testid="metric-container"]:hover{border-color:#8aaac4;}
-div[data-testid="metric-container"] label{color:#4e6880!important;font-family:'JetBrains Mono',monospace!important;font-size:10px!important;text-transform:uppercase;letter-spacing:1px;}
-div[data-testid="metric-container"] div[data-testid="stMetricValue"]{color:#1b2a3b!important;font-family:'JetBrains Mono',monospace!important;font-size:22px!important;font-weight:700!important;}
-h1,h2,h3{font-family:'Syne',sans-serif!important;color:#1b2a3b!important;}
-.stButton>button{background:linear-gradient(90deg,#b87010,#966010);color:#fff;border:none;border-radius:6px;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.5px;transition:opacity .15s;}
-.stButton>button:hover{opacity:.85;}
-.stSelectbox,.stRadio{color:#1b2a3b;}
-.stSelectbox>div>div{background:#ffffff;border-color:#c4d0de;color:#1b2a3b;}
-hr{border-color:#c4d0de;}
-.status-box{background:#ffffff;border:1px solid #c4d0de;border-radius:8px;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#4e6880;line-height:1.8;white-space:pre;overflow-x:auto;}
-.js-plotly-plot{border-radius:8px;}
-</style>
-""", unsafe_allow_html=True)
-# ── PLOTLY THEME ──────────────────────────────────────────────────────────────
-_tmpl = go.layout.Template(layout=go.Layout(
-    paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc",
-    font=dict(family="JetBrains Mono, monospace", color="#4e6880", size=10),
-    colorway=["#1758b0","#b87010","#1a7a45","#b82828","#5438a0","#987010"],
-    xaxis=dict(gridcolor="#d8e2ee", zerolinecolor="#c4d0de"),
-    yaxis=dict(gridcolor="#d8e2ee", zerolinecolor="#c4d0de"),
-    legend=dict(bgcolor="rgba(255,255,255,0.96)", bordercolor="#c4d0de", borderwidth=1),
-    margin=dict(l=50,r=20,t=40,b=40),
-))
-pio.templates["energy_light"] = _tmpl
-pio.templates.default = "plotly+energy_light"
-PT = "plotly+energy_light"
-SCEN_COLORS = ["#1758b0","#987010","#b05828","#b82828","#5438a0","#1a7a45"]
+# Palette, CSS and Plotly template live in theme.py (single source of truth).
+# Mode = sidebar "Dark mode" toggle; first visit follows the browser/Streamlit theme.
+if "ui_dark" not in st.session_state:
+    try:
+        st.session_state["ui_dark"] = (st.context.theme.type == "dark")
+    except Exception:
+        st.session_state["ui_dark"] = False
+C  = theme.palette(bool(st.session_state.get("ui_dark")))
+st.markdown(theme.css(C), unsafe_allow_html=True)
+PT = theme.register_plotly(C)
+
+def _rgba(key, alpha):
+    """Theme colour with alpha, for Plotly fills."""
+    return theme.rgba(C, key, alpha)
+
+SCEN_COLORS = [C["blue"],C["gold"],C["rust"],C["red"],C["purple"],C["green"]]
 HORIZONS    = ["1M","3M","6M","9M","12M"]
 _PCFG = {"displayModeBar":False,"displaylogo":False}
 # ── SESSION STATE ─────────────────────────────────────────────────────────────
@@ -540,14 +510,15 @@ def fetch_live_prices():
         prices["OVX"] = None
     return prices
 # ── HELPERS ───────────────────────────────────────────────────────────────────
-def section(num, title, hint=""):
+def section(title, hint=""):
+    """Section header: high-contrast title + optional one-line description."""
     st.markdown(f"""
-    <div style="margin-top:28px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #c4d0de;
-                display:flex;align-items:center;justify-content:space-between">
-      <span style="font-size:12px;font-weight:700;color:#4e6880;text-transform:uppercase;letter-spacing:1.8px">
-        {num} {title}
+    <div style="margin-top:22px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);
+                display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px">
+      <span style="font-size:15px;font-weight:800;color:var(--ink);text-transform:uppercase;letter-spacing:1.4px">
+        {html.escape(title)}
       </span>
-      <span style="font-size:9px;color:#7a92a8;font-family:'JetBrains Mono',monospace">{hint}</span>
+      <span style="font-size:12px;color:var(--muted);font-family:'JetBrains Mono',monospace">{html.escape(hint)}</span>
     </div>""", unsafe_allow_html=True)
 
 def next_biz_days(n):
@@ -562,11 +533,11 @@ def interp_line(start,end,n):
 
 def _pc(key): return f"chart_{key}"
 
-_TH = ("padding:7px 12px;background:#eaeff6;color:#4e6880;font-family:'JetBrains Mono',monospace;"
-       "font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #c4d0de;"
+_TH = ("padding:7px 12px;background:var(--th-bg);color:var(--muted);font-family:'JetBrains Mono',monospace;"
+       "font-size:11px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid var(--border);"
        "text-align:center;white-space:nowrap;")
 _TD = ("padding:6px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;"
-       "border-bottom:1px solid #d8e2ee;text-align:center;")
+       "border-bottom:1px solid var(--grid);text-align:center;")
 
 def _html_table(headers, rows):
     """rows: list of lists; each cell is str or (str, extra_css)."""
@@ -575,17 +546,17 @@ def _html_table(headers, rows):
     for r in rows:
         cells = ""
         for c in r:
-            txt, css = (c if isinstance(c, tuple) else (c, "color:#1b2a3b;"))
+            txt, css = (c if isinstance(c, tuple) else (c, "color:var(--ink);"))
             cells += f'<td style="{_TD}{css}">{txt}</td>'
         body += f"<tr>{cells}</tr>"
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border);margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:var(--panel)">'
         f'<thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>',
         unsafe_allow_html=True)
 
 def _prob_color(p):
-    return "#b82828" if p >= 75 else "#987010" if p >= 50 else "#b87010" if p >= 25 else "#1a7a45"
+    return C["red"] if p >= 75 else C["gold"] if p >= 50 else C["amber"] if p >= 25 else C["green"]
 
 def _is_admin():
     return bool(st.session_state.get("auth_is_admin"))
@@ -742,7 +713,7 @@ def _get_front_contract_ticker() -> str:
 
 # ── ① SNAPSHOT ────────────────────────────────────────────────────────────────
 def render_snapshot(result, agent):
-    section("01", "SNAPSHOT")
+    section("SNAPSHOT")
     ho   = agent == "ho"
     md   = result.get("market_data", {})
     f    = result.get("forecast", {})
@@ -812,13 +783,13 @@ def render_price_history(result, agent):
       - Chart height raised from 340 → 480
     """
     front_ticker = _get_front_contract_ticker()
-    section("02", "PRICE HISTORY",
+    section("PRICE HISTORY",
             f"HO1 Front Contract: {front_ticker} · Short-term periods use live intraday fetch")
     ho          = agent == "ho"
     daily_hist  = result.get("history", [])
     ticker_name = "HO" if ho else "WTI"
-    color       = "#b87010" if ho else "#1758b0"
-    fill_rgba   = "184,112,16" if ho else "23,88,176"
+    color       = C["amber"] if ho else C["blue"]
+    fill_key    = "amber" if ho else "blue"
     # Period options — "1 Hour" removed (unreliable intraday source)
     PERIOD_OPTS  = ["1 Day", "1 Week", "1 Month", "3 Months", "6 Months", "1 Year", "All"]
     INTRADAY_SET = {"1 Day", "1 Week"}
@@ -845,7 +816,7 @@ def render_price_history(result, agent):
         xaxis_cfg = dict(
             type="date",
             tickformat=tick_fmt,
-            rangeslider=dict(visible=True, bgcolor="#f5f8fc"),
+            rangeslider=dict(visible=True, bgcolor=C["plot_bg"]),
         )
         ma_n = min(6, max(1, len(prices) // 4))
     # ── Daily path (1M and longer) ────────────────────────────────────────────
@@ -863,7 +834,7 @@ def render_price_history(result, agent):
                         or any(r.get("synthetic") for r in filtered))
         xaxis_cfg = dict(
             type="date",
-            rangeslider=dict(visible=True, bgcolor="#f5f8fc"),
+            rangeslider=dict(visible=True, bgcolor=C["plot_bg"]),
         )
         ma_n = min(20, max(1, len(prices) // 2)) if ho else min(7, max(1, len(prices) // 2))
     # ── Synthetic warning ─────────────────────────────────────────────────────
@@ -892,24 +863,24 @@ def render_price_history(result, agent):
     fig.add_trace(go.Scatter(
         x=labels, y=prices, name="Price",
         line=dict(color=color, width=2),
-        fill="tozeroy", fillcolor=f"rgba({fill_rgba},.06)",
+        fill="tozeroy", fillcolor=_rgba(fill_key, .08),
         hovertemplate="$%{y:.4f}<extra></extra>" if ho else "$%{y:.2f}<extra></extra>"))
     fig.add_trace(go.Scatter(
         x=labels, y=ma, name=f"{ma_n}pt MA",
-        line=dict(color="#5438a0", width=1.5, dash="dot"),
+        line=dict(color=C["purple"], width=1.5, dash="dot"),
         hovertemplate="MA: $%{y:.4f}<extra></extra>" if ho else "MA: $%{y:.2f}<extra></extra>"))
     fig.update_layout(
-        template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=520,
+        template=PT, height=520,
         title=dict(
             text=(f"HO1 — {front_ticker} — Price History ({period_s})"
                   if ho else f"WTI Crude — Price History ({period_s})"),
-            font=dict(size=12, color="#1b2a3b")),
+            font=dict(size=14, color=C["ink"])),
         xaxis=xaxis_cfg,
         yaxis=dict(tickformat="$.4f" if ho else "$.2f", range=yrange),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     with st.container():
-        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("price_hist"))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("price_hist"))
 
 
 # ── ③ PROBABILITY DISTRIBUTION ───────────────────────────────────────────────
@@ -937,7 +908,7 @@ def display_prob_table(result, sel_h):
 
 
 def render_prob_dist(result, agent, sel_h, sel_bin):
-    section("03","PROBABILITY DISTRIBUTION","Horizon selector in sidebar · range adapts to horizon")
+    section("PROBABILITY DISTRIBUTION","Horizon selector in sidebar · range adapts to horizon")
     ho   = agent=="ho"
     if ho and result.get("prob_grid"):
         ss = st.session_state
@@ -967,31 +938,31 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
     maxP  = max(probs)
     colors = []
     for b,p in zip(bins,probs):
-        if sel_bin and b==sel_bin: colors.append("#1758b0")
-        elif sel_bin:              colors.append("rgba(23,88,176,.2)")
-        elif p==maxP:              colors.append("#b87010")
-        else:                      colors.append("#1758b0" if ho else "#b87010")
+        if sel_bin and b==sel_bin: colors.append(C["blue"])
+        elif sel_bin:              colors.append(_rgba("blue", .2))
+        elif p==maxP:              colors.append(C["amber"])
+        else:                      colors.append(C["blue"] if ho else C["amber"])
     with c1:
         fig=go.Figure(go.Bar(y=bins,x=probs,orientation="h",marker_color=colors,
             text=[f"{p:.1f}%" for p in probs],textposition="outside",
             hovertemplate="%{y}: %{x:.2f}%<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=360,
-            title=dict(text=f"Probability by Price Bin — {sel_h}",font=dict(size=11,color="#1b2a3b")),
-            xaxis=dict(title="Probability (%)",ticksuffix="%"),
+        fig.update_layout(template=PT,height=360,
+            title=dict(text=f"Probability by Price Bin — {sel_h}",font=dict(size=13,color=C["ink"])),
+            xaxis=dict(title="Probability (%)",ticksuffix="%",range=[0,maxP*1.2]),   # room for outside labels
             yaxis=dict(autorange="reversed"),bargap=0.15,showlegend=False)
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("prob_bar"))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("prob_bar"))
     with c2:
         cum=0; cdf=[]
         for _,p in rows: cum+=p; cdf.append(round(cum*100,2))
         fig=go.Figure(go.Scatter(x=bins,y=cdf,mode="lines+markers",
-            line=dict(color="#5438a0",width=2),marker=dict(size=4,color="#5438a0"),
-            fill="tozeroy",fillcolor="rgba(84,56,160,.07)",
+            line=dict(color=C["purple"],width=2),marker=dict(size=4,color=C["purple"]),
+            fill="tozeroy",fillcolor=_rgba("purple", .07),
             hovertemplate="%{x}: P(<=) = %{y:.1f}%<extra></extra>"))
-        fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=360,
-            title=dict(text=f"Cumulative Distribution — {sel_h}",font=dict(size=11,color="#1b2a3b")),
+        fig.update_layout(template=PT,height=360,
+            title=dict(text=f"Cumulative Distribution — {sel_h}",font=dict(size=13,color=C["ink"])),
             yaxis=dict(title="Cumulative Probability (%)",ticksuffix="%",range=[0,100]),
             xaxis=dict(title="Price Range"))
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("cdf"))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("cdf"))
     ev = result.get("ev_by_horizon",{})
     if ev:
         st.markdown("**Expected Value (EV) by Horizon** — probability-weighted average price")
@@ -1008,19 +979,19 @@ def render_prob_dist(result, agent, sel_h, sel_bin):
             with c_a:
                 fig=go.Figure()
                 fig.add_trace(go.Scatter(x=ls["x"],y=ls["y"],mode="lines",
-                    line=dict(color="#b87010",width=2),fill="tozeroy",
-                    fillcolor="rgba(184,112,16,.12)",
+                    line=dict(color=C["amber"],width=2),fill="tozeroy",
+                    fillcolor=_rgba("amber", .12),
                     hovertemplate="Price: $%{x:.4f}<br>PDF: %{y:.5f}<extra></extra>"))
-                fig.add_vline(x=ls["mean"],  line=dict(color="#1758b0",dash="dash",width=1.5),
+                fig.add_vline(x=ls["mean"],  line=dict(color=C["blue"],dash="dash",width=1.5),
                               annotation_text=f"Mean ${ls['mean']:.4f}",
-                              annotation_font=dict(color="#1758b0",size=9))
-                fig.add_vline(x=ls["median"],line=dict(color="#1a7a45",dash="dot",width=1.5),
+                              annotation_font=dict(color=C["blue"],size=11))
+                fig.add_vline(x=ls["median"],line=dict(color=C["green"],dash="dot",width=1.5),
                               annotation_text=f"Median ${ls['median']:.4f}",
-                              annotation_font=dict(color="#1a7a45",size=9))
-                fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=260,
-                    title=dict(text="Log-Normal PDF — shape, skewness, kurtosis",font=dict(size=11,color="#1b2a3b")),
+                              annotation_font=dict(color=C["green"],size=11))
+                fig.update_layout(template=PT,height=260,
+                    title=dict(text="Log-Normal PDF — shape, skewness, kurtosis",font=dict(size=13,color=C["ink"])),
                     xaxis=dict(title="HO Price ($/gal)"),yaxis=dict(title="Probability Density"),showlegend=False)
-                st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("lognorm"))
+                st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("lognorm"))
             with c_b:
                 st.metric("Mean",    f"${ls['mean']:.4f}")
                 st.metric("Median",  f"${ls['median']:.4f}")
@@ -1032,20 +1003,20 @@ def _render_prob_table(labels, table, sel_h, sel_bin):
     rows = []
     for i, b in enumerate(labels):
         sel = sel_bin == b
-        bg = "background:#e2edf8;" if sel else ""
-        r = [(b, f"{bg}color:#1b2a3b;font-weight:{'700' if sel else '400'}")]
+        bg = "background:var(--sel-bg);" if sel else ""
+        r = [(b, f"{bg}color:var(--ink);font-weight:{'700' if sel else '400'}")]
         for h in HORIZONS:
             col = table.get(h, [])
             pct = round(col[i]*100, 1) if i < len(col) else 0.0
             top = h == sel_h and col and pct == round(max(col)*100, 1)
-            r.append((f"{pct:.1f}%", f"{bg}color:{'#b87010' if top else '#1b2a3b'}"))
+            r.append((f"{pct:.1f}%", f"{bg}color:{C['amber'] if top else C['ink']}"))
         rows.append(r)
     _html_table(["Bin"] + HORIZONS, rows)
 
 
 # ── ③B SCENARIO IMPACT ───────────────────────────────────────────────────────
 def render_scenario_impact(result, sel_h):
-    section("03B", "SCENARIO IMPACT ON PROBABILITY DISTRIBUTION",
+    section("SCENARIO IMPACT ON PROBABILITY DISTRIBUTION",
             "If X happens → numbers · preset shock sizes = historical 1-month percentile moves")
     import ho_agent as H
     presets = result.get("scenario_presets") or []
@@ -1106,8 +1077,8 @@ def render_scenario_impact(result, sel_h):
                      f'{o["s"]["wti_pct"]:+.1f}%', f'{o["s"]["crack_chg"]:+.2f}', f'{o["vs"]*100:.1f}%',
                      f'${o["ho_s"]:.4f}', f'${o["p50"]:.4f}', f'${o["ev"]:.4f}',
                      f'${o["p10"]:.4f} – ${o["p90"]:.4f}',
-                     (f'{o["plo"]:.1f}%', "color:#b82828;"), (f'{o["phi"]:.1f}%', "color:#1a7a45;"),
-                     (f'{d:+.4f}', f"color:{'#1a7a45' if d >= 0 else '#b82828'};")])
+                     (f'{o["plo"]:.1f}%', "color:var(--red);"), (f'{o["phi"]:.1f}%', "color:var(--green);"),
+                     (f'{d:+.4f}', f"color:{C['green'] if d >= 0 else C['red']};")])
     st.markdown(f"**Scenario outcomes — {sel_h} horizon**")
     _html_table(["Scenario", "WTI", "Crack Δ", "Vol", "HO implied", "Median", "EV",
                  "80% range", f"P(< ${thr_lo:.2f})", f"P(> ${thr_hi:.2f})", "EV Δ vs Base"], rows)
@@ -1118,25 +1089,25 @@ def render_scenario_impact(result, sel_h):
                                  line=dict(color=SCEN_COLORS[i % len(SCEN_COLORS)],
                                            width=3 if i == 0 else 1.8, dash=None if i == 0 else "dot"),
                                  hovertemplate="%{x}: %{y:.1f}%<extra>" + o["s"]["name"] + "</extra>"))
-    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=340,
+    fig.update_layout(template=PT, height=340,
                       title=dict(text=f"Probability by Price Bin under each Scenario — {sel_h}",
-                                 font=dict(size=11, color="#1b2a3b")),
+                                 font=dict(size=13, color=C["ink"])),
                       yaxis=dict(title="Probability (%)", ticksuffix="%"), xaxis=dict(title="Price range"),
                       hovermode="x unified",
                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("scen_impact"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("scen_impact"))
 
     rows = []
     for j, lbl in enumerate(labels):
-        r = [(lbl, "color:#1b2a3b;font-weight:600")]
+        r = [(lbl, "color:var(--ink);font-weight:600")]
         for i, o in enumerate(out):
             p = o["bins"][j]
             if i == 0:
                 r.append(f"{p:.1f}%")
             else:
                 dp = p - out[0]["bins"][j]
-                col = "#1a7a45" if dp > 0.05 else "#b82828" if dp < -0.05 else "#7a92a8"
-                r.append((f'{p:.1f}% <span style="color:{col};font-size:9px">({dp:+.1f})</span>', "color:#1b2a3b;"))
+                col = C["green"] if dp > 0.05 else C["red"] if dp < -0.05 else C["faint"]
+                r.append((f'{p:.1f}% <span style="color:{col};font-size:11px">({dp:+.1f})</span>', "color:var(--ink);"))
         rows.append(r)
     with st.expander("Full distribution by scenario (Δ pp vs Base)", expanded=False):
         _html_table(["Bin"] + [o["s"]["name"] for o in out], rows)
@@ -1145,7 +1116,7 @@ def render_scenario_impact(result, sel_h):
 # ── ⑤ VOLATILITY ─────────────────────────────────────────────────────────────
 def render_volatility(result, vctx=None):
     ho = result.get("agent") == "ho"
-    section("05","VOLATILITY",
+    section("VOLATILITY",
             "CME settlement implied vol · ATM implied vs realized · term structure · vol by strike"
             if ho else "Rolling 10-day & 30-day annualised vol · OVX implied vol proxy (live)")
     vh = result.get("vol_heatmap",[])
@@ -1212,32 +1183,32 @@ def render_volatility(result, vctx=None):
     y_upper = round(max(all_vals) * 1.10, 2) if all_vals else None
     y_lower = round(max(0, min(all_vals) * 0.80), 2) if all_vals else 0
     avg     = float(df["vol"].mean())
-    line_color = "#b87010" if ho else "#1758b0"
+    line_color = C["amber"] if ho else C["blue"]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df["date"],y=df["vol"],mode="lines",line=dict(color=line_color,width=2),
         name="Realized 10d", hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>10d RV</extra>"))
     if not r30.empty:
         fig.add_trace(go.Scatter(x=r30["date"],y=r30["rv"]*100,mode="lines",
-            line=dict(color="#5438a0",width=1.8,dash="dot"), name="Realized 30d",
+            line=dict(color=C["purple"],width=1.8,dash="dot"), name="Realized 30d",
             hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>30d RV</extra>"))
     if not iv_hist.empty:
         fig.add_trace(go.Scatter(x=iv_hist["date"], y=iv_hist["iv_atm"]*100, mode="lines+markers",
-            line=dict(color="#1a7a45", width=2), marker=dict(size=5), name="ATM Implied (front, stored)",
+            line=dict(color=C["green"], width=2), marker=dict(size=5), name="ATM Implied (front, stored)",
             hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}%<extra>ATM IV</extra>"))
     if iv_front:
         fig.add_trace(go.Scatter(x=[pd.Timestamp.today().normalize()], y=[iv_front*100], mode="markers",
-            marker=dict(color="#1a7a45", size=12, symbol="diamond"), name=f"ATM IV today ({iv_src})",
+            marker=dict(color=C["green"], size=12, symbol="diamond"), name=f"ATM IV today ({iv_src})",
             hovertemplate="Today: %{y:.1f}%<extra>ATM IV</extra>"))
     if ovx_val:
-        fig.add_hline(y=ovx_val,line=dict(color="#987010",width=1,dash="dashdot"),
-            annotation_text=f"OVX {ovx_val:.1f}", annotation_font=dict(color="#987010",size=9))
-    fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=320,
+        fig.add_hline(y=ovx_val,line=dict(color=C["gold"],width=1,dash="dashdot"),
+            annotation_text=f"OVX {ovx_val:.1f}", annotation_font=dict(color=C["gold"],size=11))
+    fig.update_layout(template=PT,height=320,
         title=dict(text=f"Front-Month ATM Implied vs Realized Volatility — {period}",
-                   font=dict(size=11,color="#1b2a3b")),
+                   font=dict(size=13,color=C["ink"])),
         xaxis=dict(title="",type="date"),
         yaxis=dict(title="Ann. Vol (%)",ticksuffix="%",range=[y_lower,y_upper] if y_upper else None),
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
-    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("vol"))
+    st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("vol"))
     if not ho:
         return
 
@@ -1248,18 +1219,18 @@ def render_volatility(result, vctx=None):
     rv30 = [vctx["rv"].get(l, {}).get(30) for l in labels]
     fig = go.Figure()
     fig.add_trace(go.Bar(x=labels, y=[v*100 if v else None for v in ivs], name="ATM Implied",
-        marker_color=["#1a7a45" if s_.startswith("CME") else "#987010" if s_ == "Proxy" else "#7a92a8" for s_ in srcs],
+        marker_color=[C["green"] if s_.startswith("CME") else C["gold"] if s_ == "Proxy" else C["faint"] for s_ in srcs],
         text=[f"{v*100:.1f}%" if v else "" for v in ivs], textposition="outside",
         customdata=srcs, hovertemplate="%{x}: %{y:.1f}%<br>%{customdata}<extra>ATM IV</extra>"))
     fig.add_trace(go.Scatter(x=labels, y=[v*100 if v else None for v in rv30], name="Realized 30d (contract)",
-        mode="lines+markers", line=dict(color="#5438a0", width=2, dash="dot"),
+        mode="lines+markers", line=dict(color=C["purple"], width=2, dash="dot"),
         hovertemplate="%{x}: %{y:.1f}%<extra>RV30</extra>"))
-    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+    fig.update_layout(template=PT, height=300,
         title=dict(text="Volatility Term Structure — ATM Implied vs Realized by Contract Month",
-                   font=dict(size=11, color="#1b2a3b")),
+                   font=dict(size=13, color=C["ink"])),
         yaxis=dict(title="Ann. Vol (%)", ticksuffix="%"), bargap=0.25,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("vol_term"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("vol_term"))
     st.caption("Green = CME settlement vol · Amber = proxy · Gray = realized fallback")
 
     # ── Vol by strike (smile) ─────────────────────────────────────────────────
@@ -1279,11 +1250,11 @@ def render_volatility(result, vctx=None):
                 hovertemplate="K %{x:.3f}: %{y:.1f}%<extra>" + l + "</extra>"))
             fig.add_vline(x=F if mode.startswith("Strike") else 1.0,
                           line=dict(color=SCEN_COLORS[i % len(SCEN_COLORS)], width=1, dash="dot"))
-        fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=320,
-            title=dict(text=f"Settlement Vol by Strike — {vctx.get('surface_src')}", font=dict(size=11, color="#1b2a3b")),
+        fig.update_layout(template=PT, height=320,
+            title=dict(text=f"Settlement Vol by Strike — {vctx.get('surface_src')}", font=dict(size=13, color=C["ink"])),
             xaxis=dict(title=mode), yaxis=dict(title="Implied Vol (%)", ticksuffix="%"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("vol_smile"))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("vol_smile"))
         st.caption("Dotted lines = each contract's futures price (ATM). OTM puts below, OTM calls above.")
     else:
         st.info("Vol by strike needs CME settlement data (auto-fetch or admin upload).")
@@ -1315,7 +1286,7 @@ def render_ko_table(result, agent, vctx=None):
     contract, plus the same probability under each numeric scenario."""
     if agent != "ho":
         return
-    section("04", "KO PROBABILITY BY CONTRACT",
+    section("KO PROBABILITY BY CONTRACT",
             "P(touch KO before expiry) · implied vol per contract · scenario map")
     if not result.get("ho_contracts"):
         st.info("Forward curve data unavailable — re-run the HO engine.")
@@ -1343,9 +1314,9 @@ def render_ko_table(result, agent, vctx=None):
     rows, heat = [], []
     for c, r in zip(contracts, base_rows):
         sig_ann = c["sigma_daily"] * np.sqrt(252)
-        row = [(r["label"], "color:#1b2a3b;font-weight:600"), (r["expiry"], "color:#4e6880;"),
+        row = [(r["label"], "color:var(--ink);font-weight:600"), (r["expiry"], "color:var(--muted);"),
                f'${r["fwd_price"]:.4f}' + ("" if c.get("price_source") != "estimated" else "*"),
-               f"{sig_ann*100:.1f}%", (c["vol_src"], "color:#4e6880;font-size:9px;"),
+               f"{sig_ann*100:.1f}%", (c["vol_src"], "color:var(--muted);font-size:11px;"),
                (f'{r["ko_prob"]:.1f}%', f'color:{_prob_color(r["ko_prob"])};font-weight:700;')]
         hrow = [r["ko_prob"]]
         for s in scen:
@@ -1362,14 +1333,14 @@ def render_ko_table(result, agent, vctx=None):
 
     fig = go.Figure(go.Heatmap(
         z=heat, x=["Base"] + [s["name"] for s in scen], y=[c["label"] for c in contracts],
-        colorscale=[[0, "#eaf5ee"], [0.25, "#b9dcc5"], [0.5, "#e8c77f"], [0.75, "#d98a4a"], [1, "#b82828"]],
+        colorscale=[[0, C["heat0"]], [0.25, C["heat1"]], [0.5, C["heat2"]], [0.75, C["heat3"]], [1, C["red"]]],
         zmin=0, zmax=100, text=[[f"{v:.0f}%" for v in r] for r in heat], texttemplate="%{text}",
         hovertemplate="%{y} · %{x}: %{z:.1f}%<extra></extra>",
-        colorbar=dict(title=dict(text="P(KO)", font=dict(size=9)), ticksuffix="%")))
-    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=420,
-        title=dict(text=f"P(Touch KO ${ko_price:.4f}) — Contract × Scenario", font=dict(size=11, color="#1b2a3b")),
+        colorbar=dict(title=dict(text="P(KO)", font=dict(size=11)), ticksuffix="%")))
+    fig.update_layout(template=PT, height=420,
+        title=dict(text=f"P(Touch KO ${ko_price:.4f}) — Contract × Scenario", font=dict(size=13, color=C["ink"])),
         yaxis=dict(autorange="reversed"), margin=dict(l=90, r=40, t=40, b=60))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_scen"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("ko_scen"))
 
     # ── Price-shock × vol grid for one contract ──────────────────────────────
     st.markdown("**KO sensitivity map** — probability across price moves and implied-vol levels")
@@ -1386,15 +1357,15 @@ def render_ko_table(result, agent, vctx=None):
     z = [[_ho_mod.barrier_touch_prob(c["fwd_price"]*(1+x), ko_price, c["t_days"], v/np.sqrt(252))*100
           for x in shocks] for v in vols]
     fig = go.Figure(go.Heatmap(z=z, x=[f"{x*100:+.0f}%" for x in shocks], y=[f"{v*100:.0f}%" for v in vols],
-        colorscale=[[0, "#eaf5ee"], [0.5, "#e8c77f"], [1, "#b82828"]], zmin=0, zmax=100,
+        colorscale=[[0, C["heat0"]], [0.5, C["heat2"]], [1, C["red"]]], zmin=0, zmax=100,
         text=[[f"{v:.0f}" for v in r] for r in z], texttemplate="%{text}",
         hovertemplate="Price move %{x} · vol %{y}: %{z:.1f}%<extra></extra>",
-        colorbar=dict(title=dict(text="P(KO)", font=dict(size=9)), ticksuffix="%")))
-    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=380,
+        colorbar=dict(title=dict(text="P(KO)", font=dict(size=11)), ticksuffix="%")))
+    fig.update_layout(template=PT, height=380,
         title=dict(text=f"{lbl}: P(KO) by immediate futures move (±2σ) × vol (historical 5th–95th pct range)",
-                   font=dict(size=11, color="#1b2a3b")),
+                   font=dict(size=13, color=C["ink"])),
         xaxis=dict(title="Immediate futures price move"), yaxis=dict(title="Annualised vol"))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ko_grid"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("ko_grid"))
     st.caption(f"Current: futures ${c['fwd_price']:.4f}, vol {sig_ann*100:.1f}% ({c['vol_src']}), "
                f"{c['t_days']} trading days to expiry.")
 
@@ -1410,7 +1381,7 @@ def render_expiry_distribution_table(result, agent, vctx=None):
     """
     if agent != "ho":
         return
-    section("04B", "PROBABILITY AT EXPIRATION (12-MONTH FORWARD)",
+    section("PROBABILITY AT EXPIRATION (12-MONTH FORWARD)",
             "Lognormal settlement distribution by contract — predefined or custom ranges")
 
     contracts = result.get("ho_contracts", [])
@@ -1473,14 +1444,14 @@ def render_expiry_distribution_table(result, agent, vctx=None):
 
     # ── Styled heatmap HTML table ─────────────────────────────────────────────
     th = (
-        "padding:7px 10px;background:#eaeff6;color:#4e6880;"
-        "font-family:'JetBrains Mono',monospace;font-size:9px;"
+        "padding:7px 10px;background:var(--th-bg);color:var(--muted);"
+        "font-family:'JetBrains Mono',monospace;font-size:11px;"
         "text-transform:uppercase;letter-spacing:.8px;"
-        "border-bottom:1px solid #c4d0de;text-align:center;white-space:nowrap;"
+        "border-bottom:1px solid var(--border);text-align:center;white-space:nowrap;"
     )
     td = (
         "padding:5px 10px;font-family:'JetBrains Mono',monospace;"
-        "font-size:10px;border-bottom:1px solid #d8e2ee;text-align:center;"
+        "font-size:11px;border-bottom:1px solid var(--grid);text-align:center;"
     )
 
     fixed_hdrs = ["Contract", "Expiry", "Fwd Price"]
@@ -1494,24 +1465,24 @@ def render_expiry_distribution_table(result, agent, vctx=None):
         bp     = r["bin_probs"]
         max_bp = max(bp) if bp else 1.0
         cells  = (
-            f'<td style="{td}color:#1b2a3b;font-weight:600">{r["label"]}</td>'
-            f'<td style="{td}color:#4e6880">{r["expiry"]}</td>'
-            f'<td style="{td}color:#1b2a3b">${r["fwd_price"]:.4f}</td>'
+            f'<td style="{td}color:var(--ink);font-weight:600">{r["label"]}</td>'
+            f'<td style="{td}color:var(--muted)">{r["expiry"]}</td>'
+            f'<td style="{td}color:var(--ink)">${r["fwd_price"]:.4f}</td>'
         )
         for p in bp:
             intensity = p / max_bp if max_bp > 0 else 0
             # Heat color: highest bin in each row = bright orange, moderate = blue, low = dim
             if intensity > 0.65:
-                cell_bg = "rgba(184,112,16,0.18)"
-                tc = "#987010"
+                cell_bg = _rgba("amber", 0.18)
+                tc = C["gold"]
                 fw = "700"
             elif intensity > 0.35:
-                cell_bg = "rgba(0,212,255,0.10)"
-                tc = "#1758b0"
+                cell_bg = _rgba("cyan", 0.10)
+                tc = C["blue"]
                 fw = "400"
             else:
                 cell_bg = "transparent"
-                tc = "#7a92a8"
+                tc = C["faint"]
                 fw = "400"
             cells += (
                 f'<td style="{td}background:{cell_bg};color:{tc};font-weight:{fw}">'
@@ -1520,8 +1491,8 @@ def render_expiry_distribution_table(result, agent, vctx=None):
         body_html += f"<tr>{cells}</tr>"
 
     st.markdown(
-        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
-        f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
+        f'<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border);margin-bottom:16px">'
+        f'<table style="width:100%;border-collapse:collapse;background:var(--panel)">'
         f'<thead><tr>{head_html}</tr></thead><tbody>{body_html}</tbody></table></div>',
         unsafe_allow_html=True,
     )
@@ -1542,36 +1513,36 @@ def render_expiry_distribution_table(result, agent, vctx=None):
             x=x_labels,
             y=y_labels,
             colorscale=[
-                [0.0,  "#f8fafc"],
-                [0.35, "#c8ddf4"],
-                [0.65, "#5888c8"],
-                [0.85, "#b87010"],
-                [1.0,  "#987010"],
+                [0.0,  C["seq0"]],
+                [0.35, C["seq1"]],
+                [0.65, C["seq2"]],
+                [0.85, C["amber"]],
+                [1.0,  C["gold"]],
             ],
             hovertemplate="Contract: %{y}<br>Range: %{x}<br>Probability: %{z:.1f}%<extra></extra>",
             showscale=True,
             colorbar=dict(
-                title=dict(text="Prob (%)", font=dict(color="#4e6880", size=9)),
-                tickfont=dict(color="#4e6880", size=9),
-                bgcolor="#f5f8fc",
-                bordercolor="#c4d0de",
+                title=dict(text="Prob (%)", font=dict(color=C["muted"], size=11)),
+                tickfont=dict(color=C["muted"], size=11),
+                bgcolor=C["plot_bg"],
+                bordercolor=C["border"],
             ),
         ))
         fig.update_layout(
-            template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=360,
+            template=PT, height=360,
             title=dict(
                 text="Settlement Probability Heatmap — Contract × Price Range",
-                font=dict(size=10, color="#1b2a3b")),
-            xaxis=dict(title="Price Range", tickfont=dict(size=9)),
-            yaxis=dict(title="Contract", autorange="reversed", tickfont=dict(size=9)),
+                font=dict(size=11, color=C["ink"])),
+            xaxis=dict(title="Price Range", tickfont=dict(size=11)),
+            yaxis=dict(title="Contract", autorange="reversed", tickfont=dict(size=11)),
             margin=dict(l=100, r=80, t=40, b=80),
         )
-        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("expiry_heatmap"))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("expiry_heatmap"))
 
 
 # ── ⑥ SCENARIO ────────────────────────────────────────────────────────────────
 def render_scenario(result, agent, sel_scen):
-    section("10","SCENARIO SIMULATION","Paths driven by the Section 03B numeric scenario shocks")
+    section("SCENARIO SIMULATION","Paths driven by the numeric shocks in Probabilities → Scenario impact")
     sp   = result.get("scenario_paths",{})
     ho   = agent=="ho"
     md   = result.get("market_data",{})
@@ -1596,16 +1567,16 @@ def render_scenario(result, agent, sel_scen):
         sig_names  = ["Crack Spread","VIX","Seasonal"] + (["EIA Inventory"] if eia_on else [])
         sig_values = [sigs.get("crack_signal_ann",0),sigs.get("vix_signal_ann",0),
                       sigs.get("seasonal_signal_ann",0)] + ([sigs.get("eia_signal_ann",0)] if eia_on else [])
-        sig_colors = ["#1a7a45" if v>=0 else "#b82828" for v in sig_values]
+        sig_colors = [C["green"] if v>=0 else C["red"] for v in sig_values]
         fig_sig = go.Figure(go.Bar(
             x=sig_names, y=sig_values, marker_color=sig_colors,
             text=[f"{v:+.2f}%" for v in sig_values], textposition="outside",
             hovertemplate="%{x}: %{y:+.2f}% ann.<extra></extra>"))
-        fig_sig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=180,
-            title=dict(text="Signal Decomposition — Drift Contribution (ann.%)",font=dict(size=10,color="#1b2a3b")),
+        fig_sig.update_layout(template=PT,height=180,
+            title=dict(text="Signal Decomposition — Drift Contribution (ann.%)",font=dict(size=11,color=C["ink"])),
             yaxis=dict(title="Drift (%)", ticksuffix="%"),
             showlegend=False, bargap=0.3, margin=dict(l=40,r=20,t=36,b=30))
-        st.plotly_chart(fig_sig, use_container_width=True, config=_PCFG, key=_pc("sig_decomp"))
+        st.plotly_chart(fig_sig, use_container_width=True, config=_PCFG, theme=None, key=_pc("sig_decomp"))
     fig=go.Figure()
     for i,(sname,path) in enumerate(sp.items()):
         opa = 1.0 if not sel_scen or sel_scen==sname else 0.2
@@ -1615,32 +1586,32 @@ def render_scenario(result, agent, sel_scen):
             name=sname, line=dict(color=SCEN_COLORS[i%5],width=wid), opacity=opa,
             hovertemplate=f"<b>{sname}</b><br>${{y:.4f}}<br><i>{hover_lbl}</i><extra></extra>"))
     fmt="$.4f" if ho else "$.2f"
-    fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=340,
+    fig.update_layout(template=PT,height=340,
         title=dict(text="14-Day Scenario Simulation Paths (Dynamic Drift + VIX-Scaled Vol)",
-                   font=dict(size=11,color="#1b2a3b")),
+                   font=dict(size=13,color=C["ink"])),
         yaxis=dict(tickformat=fmt),hovermode="x unified",
         legend=dict(orientation="h",yanchor="bottom",y=1.02,xanchor="right",x=1))
-    st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen"))
+    st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("scen"))
     if ho and sp:
         st.markdown("**Scenario Parameters** — effective drift and volatility after signal adjustments")
         rows_html = ""
-        th = "padding:7px 14px;background:#eaeff6;color:#4e6880;font-family:'JetBrains Mono',monospace;font-size:9px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid #c4d0de;text-align:center;"
-        td = "padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid #d8e2ee;text-align:center;"
+        th = "padding:7px 14px;background:var(--th-bg);color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid var(--border);text-align:center;"
+        td = "padding:6px 14px;font-family:'JetBrains Mono',monospace;font-size:11px;border-bottom:1px solid var(--grid);text-align:center;"
         for i,(sname,path) in enumerate(sp.items()):
             drift = path.get("total_drift", 0)
             vol   = path.get("vol_ann", 0)
             lbl   = path.get("label","")
-            bg    = "background:#e2edf8;" if sel_scen==sname else ""
-            dc    = "color:#1a7a45;" if drift>=0 else "color:#b82828;"
+            bg    = "background:var(--sel-bg);" if sel_scen==sname else ""
+            dc    = "color:var(--green);" if drift>=0 else "color:var(--red);"
             rows_html += f"""<tr>
               <td style="{td}{bg}color:{SCEN_COLORS[i%5]};font-weight:700">{sname}</td>
               <td style="{td}{bg}{dc}">{drift:+.1f}%</td>
-              <td style="{td}{bg}color:#5438a0;">{vol:.1f}%</td>
-              <td style="{td}{bg}color:#4e6880;font-size:9px;text-align:left">{lbl}</td>
+              <td style="{td}{bg}color:var(--purple);">{vol:.1f}%</td>
+              <td style="{td}{bg}color:var(--muted);font-size:11px;text-align:left">{lbl}</td>
             </tr>"""
         st.markdown(
-            f'<div style="overflow-x:auto;border-radius:8px;border:1px solid #c4d0de;margin-bottom:16px">'
-            f'<table style="width:100%;border-collapse:collapse;background:#ffffff">'
+            f'<div style="overflow-x:auto;border-radius:8px;border:1px solid var(--border);margin-bottom:16px">'
+            f'<table style="width:100%;border-collapse:collapse;background:var(--panel)">'
             f'<thead><tr>'
             f'<th style="{th}text-align:left">Scenario</th>'
             f'<th style="{th}">Drift (ann.)</th>'
@@ -1651,33 +1622,33 @@ def render_scenario(result, agent, sel_scen):
     c1,c2 = st.columns(2)
     with c1:
         names_s=[s for s in sp]; finals=[sp[s]["final"] for s in names_s]
-        cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else "rgba(122,146,168,.25)" for i,n in enumerate(names_s)]
+        cols_s=[SCEN_COLORS[i%5] if (not sel_scen or sel_scen==n) else _rgba("faint", .25) for i,n in enumerate(names_s)]
         fig=go.Figure(go.Bar(x=names_s,y=finals,marker_color=cols_s,
             text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in finals],textposition="outside"))
-        fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=240,
-            title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=10,color="#1b2a3b")),
+        fig.update_layout(template=PT,height=240,
+            title=dict(text="Scenario Final Prices (Day 14)",font=dict(size=11,color=C["ink"])),
             yaxis=dict(tickformat="$.4f" if ho else "$.2f"),showlegend=False,bargap=0.2)
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("scen_final"))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("scen_final"))
     with c2:
         cib=result.get("ci_bands",{})
         w95=[round((cib.get(h,{}).get("ci95",[0,0])[1]-cib.get(h,{}).get("ci95",[0,0])[0]),4) for h in HORIZONS]
         w80=[round((cib.get(h,{}).get("ci80",[0,0])[1]-cib.get(h,{}).get("ci80",[0,0])[0]),4) for h in HORIZONS]
         mids=[cib.get(h,{}).get("mid",0) for h in HORIZONS]
         fig=go.Figure()
-        fig.add_trace(go.Bar(x=HORIZONS,y=w95,name="95% CI Width",marker_color="rgba(26,122,69,.65)"))
-        fig.add_trace(go.Bar(x=HORIZONS,y=w80,name="80% CI Width",marker_color="rgba(23,88,176,.5)"))
+        fig.add_trace(go.Bar(x=HORIZONS,y=w95,name="95% CI Width",marker_color=_rgba("green", .65)))
+        fig.add_trace(go.Bar(x=HORIZONS,y=w80,name="80% CI Width",marker_color=_rgba("blue", .5)))
         fig.add_trace(go.Scatter(x=HORIZONS,y=mids,name="Midpoint",mode="lines+markers",
-            line=dict(color="#987010",width=1.5,dash="dot"),marker=dict(size=5)))
-        fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=240,
-            title=dict(text="Forecast Uncertainty by Horizon (CI Width)",font=dict(size=10,color="#1b2a3b")),
+            line=dict(color=C["gold"],width=1.5,dash="dot"),marker=dict(size=5)))
+        fig.update_layout(template=PT,height=240,
+            title=dict(text="Forecast Uncertainty by Horizon (CI Width)",font=dict(size=11,color=C["ink"])),
             yaxis=dict(title="Width ($)",tickformat="$.4f" if ho else "$.2f"),
             barmode="overlay",bargap=0.2,legend=dict(orientation="h",y=1.1,x=0))
-        st.plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc("ci_width"))
+        st.plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc("ci_width"))
 
 
 # ── ⑦ REGIONAL MAP ───────────────────────────────────────────────────────────
 def render_regional(result, agent, sel_reg):
-    section("11","REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
+    section("REGIONAL PRICE MAP","United States · Brazil — Green = below avg, Red = above avg")
     rp    = result.get("regional_prices",[])
     br_rp = result.get("brazil_regional_prices",[])
     ho    = agent=="ho"
@@ -1688,7 +1659,7 @@ def render_regional(result, agent, sel_reg):
         fig   = go.Figure()
         for r in data:
             sel  = sel_reg == r["region"]
-            clr  = "#1758b0" if sel else ("#b82828" if r["price"] > avg_p else "#1a7a45")
+            clr  = C["blue"] if sel else (C["red"] if r["price"] > avg_p else C["green"])
             delt = (r["price"] - avg_p) / avg_p * 100
             fig.add_trace(go.Scattergeo(
                 lat=[r["lat"]], lon=[r["lon"]],
@@ -1710,11 +1681,11 @@ def render_regional(result, agent, sel_reg):
                     "%{customdata[3]}<extra></extra>"),
                 name=r["region"], showlegend=False))
         geo_cfg = dict(
-            bgcolor="#f5f8fc", landcolor="#eaeff6",
-            coastlinecolor="#c4d0de", showlakes=False,
-            showrivers=False, framecolor="#c4d0de",
-            showocean=True, oceancolor="#ffffff",
-            showcountries=True, countrycolor="#c4d0de")
+            bgcolor=C["plot_bg"], landcolor=C["th_bg"],
+            coastlinecolor=C["border"], showlakes=False,
+            showrivers=False, framecolor=C["border"],
+            showocean=True, oceancolor=C["panel"],
+            showcountries=True, countrycolor=C["border"])
         if scope:
             geo_cfg["scope"] = scope
         if proj:
@@ -1725,8 +1696,8 @@ def render_regional(result, agent, sel_reg):
             geo_cfg["projection"] = dict(scale=scale)
         fig.update_geos(**geo_cfg)
         fig.update_layout(
-            template=PT, paper_bgcolor="#f5f8fc", height=380,
-            title=dict(text=title, font=dict(size=11, color="#1b2a3b")),
+            template=PT, height=380,
+            title=dict(text=title, font=dict(size=13, color=C["ink"])),
             margin=dict(l=0,r=0,t=36,b=0))
         return fig
 
@@ -1737,7 +1708,7 @@ def render_regional(result, agent, sel_reg):
         if us_rp:
             fig_us = _make_map(us_rp, scope="usa",
                                title="US Regional Heating Oil Prices ($/gal)", proj="albers usa")
-            st.plotly_chart(fig_us, use_container_width=True, config=_PCFG, key=_pc("map_us"))
+            st.plotly_chart(fig_us, use_container_width=True, config=_PCFG, theme=None, key=_pc("map_us"))
             us_prices_all = [r["price"] for r in us_rp]
             st.caption(f"US avg: **${float(np.mean(us_prices_all)):.4f}/gal** · "
                        f"{len(us_rp)} regions · Green = below avg, Red = above avg")
@@ -1746,7 +1717,7 @@ def render_regional(result, agent, sel_reg):
         if br_rp:
             fig_br = _make_map(br_rp, scope="south america",
                                title="Brazil Regional Heating Oil Prices ($/gal)", proj="mercator")
-            st.plotly_chart(fig_br, use_container_width=True, config=_PCFG, key=_pc("map_br"))
+            st.plotly_chart(fig_br, use_container_width=True, config=_PCFG, theme=None, key=_pc("map_br"))
             us_rp_all = [r for r in rp if r.get("country","US")=="US"]
             us_prices_all = [r["price"] for r in us_rp_all] if us_rp_all else [0]
             br_prices_all = [r["price"] for r in br_rp]
@@ -1756,7 +1727,7 @@ def render_regional(result, agent, sel_reg):
                 [dict(r, label=r["region"]) for r in br_rp]
             )
             all_regions.sort(key=lambda x: x["price"])
-            bar_colors_cmp = ["#1758b0" if r.get("country","US")=="US" else "#b87010"
+            bar_colors_cmp = [C["blue"] if r.get("country","US")=="US" else C["amber"]
                               for r in all_regions]
             fig_cmp.add_trace(go.Bar(
                 x=[r["label"] for r in all_regions],
@@ -1766,22 +1737,21 @@ def render_regional(result, agent, sel_reg):
                 textposition="outside",
                 hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>"))
             fig_cmp.add_hline(y=float(np.mean(us_prices_all)),
-                line=dict(color="#1758b0", width=1, dash="dot"),
+                line=dict(color=C["blue"], width=1, dash="dot"),
                 annotation_text=f"US avg ${np.mean(us_prices_all):.4f}",
-                annotation_font=dict(color="#1758b0", size=8))
+                annotation_font=dict(color=C["blue"], size=8))
             fig_cmp.add_hline(y=float(np.mean(br_prices_all)),
-                line=dict(color="#b87010", width=1, dash="dot"),
+                line=dict(color=C["amber"], width=1, dash="dot"),
                 annotation_text=f"BR avg ${np.mean(br_prices_all):.4f}",
-                annotation_font=dict(color="#b87010", size=8))
+                annotation_font=dict(color=C["amber"], size=8))
             fig_cmp.update_layout(
-                template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc",
-                height=280,
+                template=PT, height=280,
                 title=dict(text="All Regions Ranked by Price — Blue = US, Orange = Brazil",
-                           font=dict(size=10, color="#1b2a3b")),
+                           font=dict(size=11, color=C["ink"])),
                 yaxis=dict(title="$/gal", tickformat="$.4f"),
                 showlegend=False, bargap=0.15,
                 margin=dict(l=40, r=10, t=36, b=60))
-            st.plotly_chart(fig_cmp, use_container_width=True, config=_PCFG, key=_pc("region_cmp"))
+            st.plotly_chart(fig_cmp, use_container_width=True, config=_PCFG, theme=None, key=_pc("region_cmp"))
             us_avg_v  = float(np.mean(us_prices_all))
             br_avg_v  = float(np.mean(br_prices_all))
             delta_pct = (br_avg_v - us_avg_v) / us_avg_v * 100
@@ -1793,7 +1763,7 @@ def render_regional(result, agent, sel_reg):
 
 # ── ⑧ EIA INVENTORY DEEP DIVE ────────────────────────────────────────────────
 def render_eia_deep_dive(result):
-    section("07","EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
+    section("EIA INVENTORY DEEP DIVE","Seasonal band · WoW momentum · 5-year range")
     eia  = result.get("eia_data",{})
     hist = eia.get("history",[])
     c1,c2,c3 = st.columns(3)
@@ -1835,33 +1805,33 @@ def render_eia_deep_dive(result):
         df_show = df_full.tail(52)
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_show["period"], y=df_show["value"],
-            mode="lines+markers", line=dict(color="#1758b0", width=2),
-            marker=dict(size=4), fill="tozeroy", fillcolor="rgba(23,88,176,.07)",
+            mode="lines+markers", line=dict(color=C["blue"], width=2),
+            marker=dict(size=4), fill="tozeroy", fillcolor=_rgba("blue", .07),
             hovertemplate="Week %{x}: %{y:,.0f} Mbbl<extra></extra>", name="Distillate Stocks"))
         if len(df_show) >= 4:
             avg_v = df_show["value"].mean()
-            fig.add_hline(y=avg_v, line=dict(color="#987010", width=1, dash="dash"),
-                annotation_text=f"1yr Avg {avg_v:,.0f}", annotation_font=dict(color="#987010", size=9))
-        fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-            title=dict(text="52-Week Inventory History (Mbbl)", font=dict(size=10, color="#1b2a3b")),
+            fig.add_hline(y=avg_v, line=dict(color=C["gold"], width=1, dash="dash"),
+                annotation_text=f"1yr Avg {avg_v:,.0f}", annotation_font=dict(color=C["gold"], size=11))
+        fig.update_layout(template=PT, height=260,
+            title=dict(text="52-Week Inventory History (Mbbl)", font=dict(size=11, color=C["ink"])),
             xaxis=dict(title=""), yaxis=dict(title="Mbbl"), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia"))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("eia"))
     with c_b:
         df_wow = df_full.tail(17)
         if len(df_wow) >= 2:
             wow_vals  = [round(df_wow["value"].iloc[i] - df_wow["value"].iloc[i-1], 0)
                          for i in range(1, len(df_wow))]
             wow_dates = [df_wow["period"].iloc[i] for i in range(1, len(df_wow))]
-            wow_colors= ["#1a7a45" if w >= 0 else "#b82828" for w in wow_vals]
+            wow_colors= [C["green"] if w >= 0 else C["red"] for w in wow_vals]
             fig = go.Figure(go.Bar(
                 x=wow_dates, y=wow_vals, marker_color=wow_colors,
                 text=[f"{int(w):+,}" for w in wow_vals], textposition="outside",
                 hovertemplate="%{x}: %{y:+,.0f} Mbbl<extra></extra>"))
-            fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
-            fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-                title=dict(text="WoW Change — Last 16 Weeks", font=dict(size=10, color="#1b2a3b")),
+            fig.add_hline(y=0, line=dict(color=C["muted"], width=1))
+            fig.update_layout(template=PT, height=260,
+                title=dict(text="WoW Change — Last 16 Weeks", font=dict(size=11, color=C["ink"])),
                 xaxis=dict(tickangle=-45), yaxis=dict(title="Mbbl"), showlegend=False, bargap=0.15)
-            st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("eia_wow"))
+            st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("eia_wow"))
     sb = eia.get("seasonal_bands", [])
     cy = eia.get("current_year_data", [])
     if sb:
@@ -1871,28 +1841,28 @@ def render_eia_deep_dive(result):
         fig_s.add_trace(go.Scatter(
             x=pd.concat([df_sb["week"], df_sb["week"][::-1]]),
             y=pd.concat([df_sb["max"], df_sb["min"][::-1]]),
-            fill="toself", fillcolor="rgba(23,88,176,.07)",
+            fill="toself", fillcolor=_rgba("blue", .07),
             line=dict(color="rgba(0,0,0,0)"), showlegend=True, name="5-Yr Range"))
         fig_s.add_trace(go.Scatter(
             x=df_sb["week"], y=df_sb["avg"],
-            mode="lines", line=dict(color="#1758b0", width=1.5, dash="dot"),
+            mode="lines", line=dict(color=C["blue"], width=1.5, dash="dot"),
             name="5-Yr Avg"))
         if cy:
             df_cy = pd.DataFrame(cy)
             fig_s.add_trace(go.Scatter(
                 x=df_cy["week"], y=df_cy["value"],
-                mode="lines+markers", line=dict(color="#b87010", width=2),
+                mode="lines+markers", line=dict(color=C["amber"], width=2),
                 marker=dict(size=4), name="Current Year"))
-        fig_s.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-            title=dict(text="Seasonal Band vs Current Year (ISO Week)", font=dict(size=10, color="#1b2a3b")),
+        fig_s.update_layout(template=PT, height=260,
+            title=dict(text="Seasonal Band vs Current Year (ISO Week)", font=dict(size=11, color=C["ink"])),
             xaxis=dict(title="ISO Week"), yaxis=dict(title="Mbbl"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig_s, use_container_width=True, config=_PCFG, key=_pc("eia_seasonal"))
+        st.plotly_chart(fig_s, use_container_width=True, config=_PCFG, theme=None, key=_pc("eia_seasonal"))
 
 
 # ── ⑨ CRACK SPREAD ANALYTICS ─────────────────────────────────────────────────
 def render_crack_spread(result, agent):
-    section("06","CRACK SPREAD ANALYTICS","Time series · percentile bands · distribution · scatter")
+    section("CRACK SPREAD ANALYTICS","Time series · percentile bands · distribution · scatter")
     ho = agent=="ho"
     ch = result.get("crack_history",[])
     md = result.get("market_data",{})
@@ -1915,35 +1885,35 @@ def render_crack_spread(result, agent):
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(
             x=df_crack["date"], y=df_crack["crack"],
-            mode="lines", line=dict(color="#1a7a45", width=1.5),
-            fill="tozeroy", fillcolor="rgba(26,122,69,.07)",
+            mode="lines", line=dict(color=C["green"], width=1.5),
+            fill="tozeroy", fillcolor=_rgba("green", .07),
             hovertemplate="%{x|%Y-%m-%d}: $%{y:.2f}<extra></extra>", name="Crack Spread"))
         if crack_vals:
             p25 = float(np.percentile(crack_vals, 25))
             p75 = float(np.percentile(crack_vals, 75))
-            fig1.add_hline(y=p75, line=dict(color="#987010", width=1, dash="dot"),
-                annotation_text=f"75th ${p75:.2f}", annotation_font=dict(color="#987010", size=9))
-            fig1.add_hline(y=p25, line=dict(color="#5438a0", width=1, dash="dot"),
-                annotation_text=f"25th ${p25:.2f}", annotation_font=dict(color="#5438a0", size=9))
-        fig1.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-            title=dict(text="Crack Spread History — HO 3:2:1 ($/bbl)", font=dict(size=10, color="#1b2a3b")),
+            fig1.add_hline(y=p75, line=dict(color=C["gold"], width=1, dash="dot"),
+                annotation_text=f"75th ${p75:.2f}", annotation_font=dict(color=C["gold"], size=11))
+            fig1.add_hline(y=p25, line=dict(color=C["purple"], width=1, dash="dot"),
+                annotation_text=f"25th ${p25:.2f}", annotation_font=dict(color=C["purple"], size=11))
+        fig1.update_layout(template=PT, height=260,
+            title=dict(text="Crack Spread History — HO 3:2:1 ($/bbl)", font=dict(size=11, color=C["ink"])),
             xaxis=dict(title=""), yaxis=dict(title="$/bbl"), showlegend=False)
-        st.plotly_chart(fig1, use_container_width=True, config=_PCFG, key=_pc("crack_ts"))
+        st.plotly_chart(fig1, use_container_width=True, config=_PCFG, theme=None, key=_pc("crack_ts"))
     with cb:
         if crack_vals:
             fig2 = go.Figure(go.Histogram(
                 x=crack_vals, nbinsx=20,
-                marker_color="rgba(26,122,69,.6)",
+                marker_color=_rgba("green", .6),
                 hovertemplate="$%{x:.2f}: %{y} obs<extra></extra>"))
             if current_crack:
                 fig2.add_vline(x=current_crack,
-                    line=dict(color="#b82828", width=2, dash="dash"),
+                    line=dict(color=C["red"], width=2, dash="dash"),
                     annotation_text=f"Now ${current_crack:.2f}",
-                    annotation_font=dict(color="#b82828", size=9))
-            fig2.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-                title=dict(text="Crack Spread Distribution", font=dict(size=10, color="#1b2a3b")),
+                    annotation_font=dict(color=C["red"], size=11))
+            fig2.update_layout(template=PT, height=260,
+                title=dict(text="Crack Spread Distribution", font=dict(size=11, color=C["ink"])),
                 xaxis=dict(title="$/bbl"), yaxis=dict(title="Observations"), showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True, config=_PCFG, key=_pc("crack_dist"))
+            st.plotly_chart(fig2, use_container_width=True, config=_PCFG, theme=None, key=_pc("crack_dist"))
     if ho and len(ch) >= 10:
         ho_prices  = [r.get("ho") for r in ch if r.get("ho") and r.get("crack")]
         crack_x    = [r.get("crack") for r in ch if r.get("ho") and r.get("crack")]
@@ -1954,29 +1924,29 @@ def render_crack_spread(result, agent):
             fig3 = go.Figure()
             fig3.add_trace(go.Scatter(
                 x=crack_x, y=ho_prices, mode="markers",
-                marker=dict(color="#5438a0", size=5, opacity=0.6),
+                marker=dict(color=C["purple"], size=5, opacity=0.6),
                 name="Historical",
                 hovertemplate="Crack $%{x:.2f} → HO $%{y:.4f}<extra></extra>"))
             fig3.add_trace(go.Scatter(
                 x=x_line, y=y_line, mode="lines",
-                line=dict(color="#987010", width=1.5, dash="dot"),
+                line=dict(color=C["gold"], width=1.5, dash="dot"),
                 name=f"Regression (slope={m:.4f})", hoverinfo="skip"))
             if current_crack and current_crack in crack_x:
                 cur_ho = md.get("HO", 0)
                 fig3.add_trace(go.Scatter(
                     x=[current_crack], y=[cur_ho], mode="markers",
-                    marker=dict(color="#b82828", size=14, symbol="star",
-                                line=dict(width=2, color="#ffffff")),
+                    marker=dict(color=C["red"], size=14, symbol="star",
+                                line=dict(width=2, color=C["panel"])),
                     name="Today",
                     hovertemplate=f"Today: crack ${current_crack:.2f} → HO ${cur_ho:.4f}<extra></extra>"))
             fig3.update_layout(
-                template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
+                template=PT, height=260,
                 title=dict(text="Crack Spread vs HO Price — Historical Relationship",
-                           font=dict(size=10, color="#1b2a3b")),
+                           font=dict(size=11, color=C["ink"])),
                 xaxis=dict(title="Crack Spread ($/bbl)"),
                 yaxis=dict(title="HO Price ($/gal)", tickformat="$.4f"),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig3, use_container_width=True, config=_PCFG, key=_pc("crack_scatter"))
+            st.plotly_chart(fig3, use_container_width=True, config=_PCFG, theme=None, key=_pc("crack_scatter"))
         else:
             st.info("Insufficient data for crack vs HO scatter plot.")
 
@@ -1985,7 +1955,7 @@ def render_crack_spread(result, agent):
 def render_seasonal_pattern(result, agent):
     if agent != "ho":
         return
-    section("08","SEASONAL PATTERN ANALYSIS","Monthly average vs current — cycle positioning")
+    section("SEASONAL PATTERN ANALYSIS","Monthly average vs current — cycle positioning")
     history = result.get("history", [])
     if len(history) < 90:
         st.info("Seasonal pattern needs at least 90 days of history.")
@@ -2014,7 +1984,7 @@ def render_seasonal_pattern(result, agent):
               delta=f"{delta_vs_seasonal:+.2f}%",
               help="Positive = currently trading above seasonal norm")
     avgs_plot  = [a if a is not None else 0 for a in avgs]
-    bar_colors = ["#b87010" if i+1==current_m else "#1758b0" for i in range(12)]
+    bar_colors = [C["amber"] if i+1==current_m else C["blue"] for i in range(12)]
     fig = go.Figure()
     fig.add_trace(go.Bar(
         x=month_abbr, y=avgs_plot, marker_color=bar_colors,
@@ -2022,22 +1992,22 @@ def render_seasonal_pattern(result, agent):
         textposition="outside",
         hovertemplate="%{x}: $%{y:.4f}/gal<extra></extra>", name="Monthly Avg"))
     fig.add_hline(y=overall_avg,
-        line=dict(color="#987010", width=1.5, dash="dash"),
+        line=dict(color=C["gold"], width=1.5, dash="dash"),
         annotation_text=f"Overall avg ${overall_avg:.4f}",
-        annotation_font=dict(color="#987010", size=9))
+        annotation_font=dict(color=C["gold"], size=11))
     if cur_ho:
         fig.add_hline(y=cur_ho,
-            line=dict(color="#b82828", width=1.5, dash="dot"),
+            line=dict(color=C["red"], width=1.5, dash="dot"),
             annotation_text=f"Live ${cur_ho:.4f}",
-            annotation_font=dict(color="#b82828", size=9))
+            annotation_font=dict(color=C["red"], size=11))
     fig.update_layout(
-        template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
+        template=PT, height=300,
         title=dict(text="Seasonal Price Pattern — Monthly Historical Average",
-                   font=dict(size=11, color="#1b2a3b")),
+                   font=dict(size=13, color=C["ink"])),
         xaxis=dict(title="Month"),
         yaxis=dict(title="Avg Price ($/gal)", tickformat="$.4f"),
         showlegend=False)
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("seasonal"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("seasonal"))
     st.caption(
         f"Highlighted bar = current month ({calendar.month_name[current_m]}) · "
         f"Avg: **${current_m_avg:.4f}** · "
@@ -2046,7 +2016,7 @@ def render_seasonal_pattern(result, agent):
 
 # ── ⑪ VALUE AT RISK & EXPECTED SHORTFALL ─────────────────────────────────────
 def render_var_es(result, agent):
-    section("09","VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
+    section("VALUE AT RISK (VaR) & EXPECTED SHORTFALL","Monte Carlo — 10,000 simulations")
     ho       = agent=="ho"
     var_data = result.get("var_es",{})
     if not var_data:
@@ -2070,21 +2040,21 @@ def render_var_es(result, agent):
         pnl   = d.get("pnl_distribution",[])
         plbls = d.get("percentile_labels",[])
         if not pnl: continue
-        bar_colors=["#b82828" if v<0 else "#1a7a45" for v in pnl]
+        bar_colors=[C["red"] if v<0 else C["green"] for v in pnl]
         fig=go.Figure(go.Bar(x=plbls,y=pnl,marker_color=bar_colors,
             text=[f"${v:.4f}" if ho else f"${v:.2f}" for v in pnl],textposition="outside",
             hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
-        fig.add_hline(y=0,line=dict(color="#4e6880",width=1))
-        fig.update_layout(template=PT,paper_bgcolor="#f5f8fc",plot_bgcolor="#f5f8fc",height=240,
-            title=dict(text=f"P&L Percentile Distribution — {h}",font=dict(size=10,color="#1b2a3b")),
+        fig.add_hline(y=0,line=dict(color=C["muted"],width=1))
+        fig.update_layout(template=PT,height=240,
+            title=dict(text=f"P&L Percentile Distribution — {h}",font=dict(size=11,color=C["ink"])),
             yaxis=dict(title="P&L ($/gal)" if ho else "P&L ($/bbl)"),
             showlegend=False,bargap=0.15)
-        (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG,key=_pc(f"var_{h}"))
+        (c1 if ci==0 else c2).plotly_chart(fig,use_container_width=True,config=_PCFG, theme=None,key=_pc(f"var_{h}"))
 
 
 # ── ⑤B FORWARD CURVE & CALENDAR SPREADS ─────────────────────────────────────
 def render_curve_spreads(result):
-    section("05B", "FORWARD CURVE & INTER-MONTH SPREADS",
+    section("FORWARD CURVE & INTER-MONTH SPREADS",
             f"Source: {result.get('curve_source', 'n/a')} · spread = near − far (positive = backwardation)")
     contracts = result.get("ho_contracts", [])
     if not contracts:
@@ -2096,26 +2066,26 @@ def render_curve_spreads(result):
     px  = [c["fwd_price"] for c in contracts]
     c1, c2 = st.columns(2)
     with c1:
-        fig = go.Figure(go.Scatter(x=lbl, y=px, mode="lines+markers", line=dict(color="#b87010", width=2),
-            marker=dict(size=7, color=["#b87010" if c.get("price_source") != "estimated" else "#c4d0de" for c in contracts]),
+        fig = go.Figure(go.Scatter(x=lbl, y=px, mode="lines+markers", line=dict(color=C["amber"], width=2),
+            marker=dict(size=7, color=[C["amber"] if c.get("price_source") != "estimated" else C["border"] for c in contracts]),
             hovertemplate="%{x}: $%{y:.4f}<extra></extra>"))
-        fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
-            title=dict(text="HO Futures Curve ($/gal)", font=dict(size=11, color="#1b2a3b")),
+        fig.update_layout(template=PT, height=300,
+            title=dict(text="HO Futures Curve ($/gal)", font=dict(size=13, color=C["ink"])),
             yaxis=dict(tickformat="$.4f"), showlegend=False)
-        st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("curve"))
+        st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("curve"))
     spreads = ve.calendar_spreads(contracts)
     with c2:
         if spreads:
             vals = [x["spread"]*100 for x in spreads]
             fig = go.Figure(go.Bar(x=[x["pair"] for x in spreads], y=vals,
-                marker_color=["#1a7a45" if v >= 0 else "#b82828" for v in vals],
+                marker_color=[C["green"] if v >= 0 else C["red"] for v in vals],
                 text=[f"{v:+.2f}¢" for v in vals], textposition="outside",
                 hovertemplate="%{x}: %{y:+.2f}¢/gal<extra></extra>"))
-            fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
-            fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
-                title=dict(text="Consecutive-Month Spreads (¢/gal)", font=dict(size=11, color="#1b2a3b")),
+            fig.add_hline(y=0, line=dict(color=C["muted"], width=1))
+            fig.update_layout(template=PT, height=300,
+                title=dict(text="Consecutive-Month Spreads (¢/gal)", font=dict(size=13, color=C["ink"])),
                 yaxis=dict(title="¢/gal"), showlegend=False, bargap=0.25)
-            st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("spreads"))
+            st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("spreads"))
     if spreads:
         pairs = [f"{a['label']} / {b['label']}" for a, b in zip(contracts[:-1], contracts[1:])]
         pick = st.selectbox("Spread history", pairs, index=0, key="spread_pick")
@@ -2123,13 +2093,13 @@ def render_curve_spreads(result):
         h = ve.spread_history(contracts[i], contracts[i+1])
         if not h.empty:
             fig = go.Figure(go.Scatter(x=h["date"], y=h["spread"]*100, mode="lines",
-                line=dict(color="#5438a0", width=2), fill="tozeroy", fillcolor="rgba(84,56,160,.07)",
+                line=dict(color=C["purple"], width=2), fill="tozeroy", fillcolor=_rgba("purple", .07),
                 hovertemplate="%{x|%Y-%m-%d}: %{y:+.2f}¢<extra></extra>"))
-            fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
-            fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-                title=dict(text=f"{pick} spread history (¢/gal)", font=dict(size=11, color="#1b2a3b")),
+            fig.add_hline(y=0, line=dict(color=C["muted"], width=1))
+            fig.update_layout(template=PT, height=260,
+                title=dict(text=f"{pick} spread history (¢/gal)", font=dict(size=13, color=C["ink"])),
                 yaxis=dict(title="¢/gal"), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("spread_hist"))
+            st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("spread_hist"))
             st.caption(f"Current {h['spread'].iloc[-1]*100:+.2f}¢ · 1Y range {h['spread'].min()*100:+.2f}¢ "
                        f"to {h['spread'].max()*100:+.2f}¢ · percentile "
                        f"{(h['spread'] <= h['spread'].iloc[-1]).mean()*100:.0f}th")
@@ -2166,7 +2136,7 @@ def _input_form(fields, key, allow_csv_field=None):
 
 
 def render_basis_ppi(result):
-    section("06B", "CHICAGO BASIS & BRAZIL PPI",
+    section("CHICAGO BASIS & BRAZIL PPI",
             "Chicago ULSD vs NYMEX HO · Petrobras vs import parity (PPI)")
     inputs = _load_inputs()
     ho = result["ho_price"]
@@ -2184,12 +2154,12 @@ def render_basis_ppi(result):
             hist = inputs[inputs["field"] == "chicago_basis_cpg"]
             if len(hist) > 1:
                 fig = go.Figure(go.Scatter(x=pd.to_datetime(hist["date"]), y=hist["value"], mode="lines+markers",
-                    line=dict(color="#1758b0", width=2, shape="hv"), hovertemplate="%{x|%Y-%m-%d}: %{y:+.2f}¢<extra></extra>"))
-                fig.add_hline(y=0, line=dict(color="#4e6880", width=1))
-                fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=260,
-                    title=dict(text="Chicago ULSD Basis History (¢/gal vs NYMEX HO)", font=dict(size=11, color="#1b2a3b")),
+                    line=dict(color=C["blue"], width=2, shape="hv"), hovertemplate="%{x|%Y-%m-%d}: %{y:+.2f}¢<extra></extra>"))
+                fig.add_hline(y=0, line=dict(color=C["muted"], width=1))
+                fig.update_layout(template=PT, height=260,
+                    title=dict(text="Chicago ULSD Basis History (¢/gal vs NYMEX HO)", font=dict(size=13, color=C["ink"])),
                     yaxis=dict(title="¢/gal"), showlegend=False)
-                st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("chi_basis"))
+                st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("chi_basis"))
         if _is_admin():
             with st.expander("Admin — enter Chicago basis", expanded=False):
                 _input_form(["chicago_basis_cpg"], "form_chi", allow_csv_field="chicago_basis_cpg")
@@ -2220,23 +2190,23 @@ def render_basis_ppi(result):
                 ["+ Port / insurance / losses", f"${params['PPI_PORT_COSTS_USD_GAL']:.4f}/gal"],
                 ["× USD/BRL ÷ L/gal", f"{usdbrl:.4f} ÷ {cfg.LITERS_PER_GALLON:.4f}"],
                 ["+ Internal logistics", f"R$ {params['PPI_INTERNAL_BRL_L']:.4f}/L"],
-                [("= PPI", "font-weight:700;"), (f"R$ {ppi:.4f}/L", "font-weight:700;color:#b87010;")]])
+                [("= PPI", "font-weight:700;"), (f"R$ {ppi:.4f}/L", "font-weight:700;color:var(--amber);")]])
             hh = pd.DataFrame(result.get("history", [])); bh = pd.DataFrame(result.get("usdbrl_history", []))
             if not hh.empty and not bh.empty:
                 m = hh.merge(bh, on="date", suffixes=("_ho", "_brl"))
                 m["ppi"] = [ve.ppi_brl_per_liter(a, b, params) for a, b in zip(m["price_ho"], m["price_brl"])]
                 m["date"] = pd.to_datetime(m["date"])
                 fig = go.Figure(go.Scatter(x=m["date"], y=m["ppi"], mode="lines", name="PPI (current cost params)",
-                    line=dict(color="#b87010", width=2), hovertemplate="%{x|%Y-%m-%d}: R$ %{y:.4f}<extra>PPI</extra>"))
+                    line=dict(color=C["amber"], width=2), hovertemplate="%{x|%Y-%m-%d}: R$ %{y:.4f}<extra>PPI</extra>"))
                 ph = inputs[inputs["field"] == "petrobras_diesel_brl_l"] if not inputs.empty else pd.DataFrame()
                 if not ph.empty:
                     fig.add_trace(go.Scatter(x=pd.to_datetime(ph["date"]), y=ph["value"], mode="lines+markers",
-                        name="Petrobras", line=dict(color="#1a7a45", width=2, shape="hv"),
+                        name="Petrobras", line=dict(color=C["green"], width=2, shape="hv"),
                         hovertemplate="%{x|%Y-%m-%d}: R$ %{y:.4f}<extra>Petrobras</extra>"))
-                fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=300,
-                    title=dict(text="Diesel PPI vs Petrobras price (R$/L)", font=dict(size=11, color="#1b2a3b")),
+                fig.update_layout(template=PT, height=300,
+                    title=dict(text="Diesel PPI vs Petrobras price (R$/L)", font=dict(size=13, color=C["ink"])),
                     yaxis=dict(title="R$/L"), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-                st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("ppi"))
+                st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("ppi"))
         if _is_admin():
             with st.expander("Admin — Petrobras price & PPI cost components", expanded=False):
                 _input_form(["petrobras_diesel_brl_l", "PPI_GULF_BASIS_USD_GAL", "PPI_FREIGHT_USD_GAL",
@@ -2246,7 +2216,7 @@ def render_basis_ppi(result):
 
 # ── ⑫ FORECAST TRACK RECORD ──────────────────────────────────────────────────
 def render_track_record(result, vctx):
-    section("12", "FORECAST TRACK RECORD",
+    section("FORECAST TRACK RECORD",
             "Every day's first forecast is stored immutably and scored against what actually happened")
     ss = _store_status()
     snap = st.session_state.get("_snap_res")
@@ -2290,23 +2260,23 @@ def render_track_record(result, vctx):
     fig = go.Figure()
     x = pd.to_datetime(d["forecast_date"])
     fig.add_trace(go.Scatter(x=list(x)+list(x[::-1]), y=list(d["p95"])+list(d["p05"][::-1]), fill="toself",
-        fillcolor="rgba(23,88,176,.08)", line=dict(width=0), name="90% range", hoverinfo="skip"))
+        fillcolor=_rgba("blue", .08), line=dict(width=0), name="90% range", hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=list(x)+list(x[::-1]), y=list(d["p90"])+list(d["p10"][::-1]), fill="toself",
-        fillcolor="rgba(23,88,176,.18)", line=dict(width=0), name="80% range", hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=x, y=d["p50"], mode="lines+markers", line=dict(color="#1758b0", width=2),
+        fillcolor=_rgba("blue", .18), line=dict(width=0), name="80% range", hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=x, y=d["p50"], mode="lines+markers", line=dict(color=C["blue"], width=2),
         marker=dict(size=4), name="Forecast median",
         hovertemplate="Forecast %{x|%Y-%m-%d}: median $%{y:.4f}<extra></extra>"))
     real = d.dropna(subset=["realized"])
     if not real.empty:
         fig.add_trace(go.Scatter(x=x.loc[real.index], y=real["realized"], mode="markers",
-            marker=dict(size=9, symbol="star", color=["#1a7a45" if v == 1 else "#b82828" for v in real["in_80"]]),
+            marker=dict(size=9, symbol="star", color=[C["green"] if v == 1 else C["red"] for v in real["in_80"]]),
             name="Realized (green = inside 80%)", hovertemplate="Realized $%{y:.4f}<extra></extra>"))
-    fig.update_layout(template=PT, paper_bgcolor="#f5f8fc", plot_bgcolor="#f5f8fc", height=320,
+    fig.update_layout(template=PT, height=320,
         title=dict(text=f"{tgt}: forecast ranges by forecast date vs realized outcome "
-                        f"(target {d['target_date'].iloc[-1]})", font=dict(size=11, color="#1b2a3b")),
+                        f"(target {d['target_date'].iloc[-1]})", font=dict(size=13, color=C["ink"])),
         yaxis=dict(tickformat="$.4f"), xaxis=dict(title="Forecast date"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-    st.plotly_chart(fig, use_container_width=True, config=_PCFG, key=_pc("track"))
+    st.plotly_chart(fig, use_container_width=True, config=_PCFG, theme=None, key=_pc("track"))
     show = ev.sort_values(["forecast_date", "kind", "target_date"], ascending=[False, True, True]).head(60)
     rows = []
     for _, r in show.iterrows():
@@ -2315,7 +2285,7 @@ def render_track_record(result, vctx):
                      f"${r['p10']:.4f} – ${r['p90']:.4f}", f"${r['p50']:.4f}",
                      f"${r['realized']:.4f}" if pd.notna(r["realized"]) else "—",
                      ("✓" if hit == 1 else "✗" if hit == 0 else r["status"],
-                      f"color:{'#1a7a45' if hit == 1 else '#b82828' if hit == 0 else '#7a92a8'};font-weight:700;")])
+                      f"color:{C['green'] if hit == 1 else C['red'] if hit == 0 else C['faint']};font-weight:700;")])
     with st.expander("Forecast log (latest 60)", expanded=False):
         _html_table(["Made", "Type", "Target", "Target date", "Ref price", "80% range", "Median",
                      "Realized", "In 80%?"], rows)
@@ -2327,19 +2297,22 @@ def render_track_record(result, vctx):
 def render_sidebar():
     st.sidebar.markdown("""
     <div style="padding:16px 0 8px">
-      <div style="font-size:18px;font-weight:800;color:#1b2a3b;font-family:'Syne',sans-serif">
+      <div style="font-size:20px;font-weight:800;color:var(--side-ink);font-family:'Syne',sans-serif">
         Energy Intelligence
       </div>
-      <div style="font-size:9px;color:#4e6880;font-family:'JetBrains Mono',monospace;letter-spacing:1.2px;text-transform:uppercase">
+      <div style="font-size:12px;color:var(--side-label);font-family:'JetBrains Mono',monospace;letter-spacing:1.2px;text-transform:uppercase">
         Commodity Probability Engine
       </div>
     </div>""", unsafe_allow_html=True)
+    # Display mode — value is read at the top of the next rerun (see THEME / CSS)
+    st.sidebar.toggle("Dark mode", key="ui_dark",
+                      help="Switches every chart, table and label to a high-contrast dark palette.")
     # ── Logged-in user + logout ───────────────────────────────────────────────
     auth_user = st.session_state.get("auth_user", "")
     if auth_user:
         st.sidebar.markdown(
-            f"<div style='font-size:10px;color:#4e6880;font-family:\'JetBrains Mono\',monospace;"
-            f"padding:4px 0 8px'>{auth_user}</div>",
+            "<div style=\"font-size:12px;color:var(--side-label);font-family:'JetBrains Mono',monospace;"
+            f"padding:4px 0 8px\">Signed in: {html.escape(str(auth_user))}</div>",
             unsafe_allow_html=True
         )
         if st.sidebar.button("Sign out", use_container_width=True, key="sidebar_logout"):
@@ -2429,8 +2402,8 @@ def render_sidebar():
                            + f"{_ss.get('backend')} — {_ss.get('detail')}")
     st.sidebar.divider()
     st.sidebar.markdown("""
-    <div style="font-size:9px;color:#7a92a8;font-family:'JetBrains Mono',monospace;line-height:1.8">
-    Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:#1758b0;text-decoration:none">lsaggioro@potonmail.com</a>
+    <div style="font-size:12px;color:var(--side-label);font-family:'JetBrains Mono',monospace;line-height:1.8">
+    Contact:<br><a href="mailto:lsaggioro@potonmail.com" style="color:var(--side-ink);text-decoration:none">lsaggioro@potonmail.com</a>
     </div>""",unsafe_allow_html=True)
 
 
@@ -2448,48 +2421,80 @@ def render_dashboard():
     if not result:
         st.markdown("""
         <div style="text-align:center;padding:80px 0">
-          <div style="font-size:22px;font-weight:800;color:#1b2a3b;font-family:'Syne',sans-serif;margin-bottom:8px">
+          <div style="font-size:22px;font-weight:800;color:var(--ink);font-family:'Syne',sans-serif;margin-bottom:8px">
             Energy Intelligence Dashboard
           </div>
-          <div style="font-size:11px;color:#4e6880;font-family:'JetBrains Mono',monospace;letter-spacing:.8px">
+          <div style="font-size:11px;color:var(--muted);font-family:'JetBrains Mono',monospace;letter-spacing:.8px">
             DETERMINISTIC COMMODITY PROBABILITY ENGINE
           </div>
-          <div style="margin-top:32px;font-size:13px;color:#7a92a8">
-            Click <strong style="color:#b87010">Oil</strong> or <strong style="color:#1758b0">HO</strong> in the sidebar to begin
+          <div style="margin-top:32px;font-size:13px;color:var(--faint)">
+            Click <strong style="color:var(--amber)">Oil</strong> or <strong style="color:var(--blue)">HO</strong> in the sidebar to begin
           </div>
         </div>""",unsafe_allow_html=True)
         return
     ho = agent == "ho"
-    # Section order (v4.0):
-    # 01 Snapshot · 02 Price History · 03 Prob Distribution · 03B Scenario Impact
-    # 04 KO Prob · 04B Expiry Dist · 05 Volatility · 05B Curve & Spreads · 06 Crack
-    # 06B Chicago basis & Brazil PPI · 07 EIA (flag) · 08 Seasonal · 09 VaR
-    # 10 Scenario paths · 11 Regional Map · 12 Track Record
     vctx = None
     if ho:
         vctx = build_vol_context(result, result.get("run_dir", ""))
         _autosave_snapshot(result, vctx)
-    render_snapshot(result, agent)
-    render_price_history(result, agent)
-    render_prob_dist(result, agent, sel_h, sel_bin)
-    if ho:
-        render_scenario_impact(result, sel_h)
-        render_ko_table(result, agent, vctx)
-        render_expiry_distribution_table(result, agent, vctx)
-    render_volatility(result, vctx)
-    if ho:
-        render_curve_spreads(result)
-        render_crack_spread(result, agent)
-        render_basis_ppi(result)
-        if cfg.get("EIA_ENABLED"):
-            render_eia_deep_dive(result)
-        render_seasonal_pattern(result, agent)
-        render_var_es(result, agent)
-    render_scenario(result, agent, sel_scen)
-    render_regional(result, agent, sel_reg)
-    if ho:
-        render_track_record(result, vctx)
-    section("--","MARKET SUMMARY")
+    render_snapshot(result, agent)          # KPI strip stays above the tabs
+    _render_tab_layout(_dashboard_layout(result, agent, vctx, sel_h, sel_bin, sel_scen, sel_reg, ho))
+
+
+def _dashboard_layout(result, agent, vctx, sel_h, sel_bin, sel_scen, sel_reg, ho):
+    """Charts grouped by what they measure (v4.1, client feedback: one tab per measure).
+
+    Returns [(category, [(sub_tab, render_fn), ...]), ...]. Items that don't apply to the
+    current engine are omitted; empty categories are dropped. ORDER MATTERS: tabs render
+    top-to-bottom, and "Scenario impact" must run before "KO" / "Scenario paths" because it
+    writes st.session_state["scen_list"], which those sections read.
+    """
+    def item(label, fn, show=True):
+        return (label, fn) if show else None
+
+    layout = [
+        ("Prices & Averages", [
+            item("Price history & moving avg", lambda: render_price_history(result, agent)),
+            item("Seasonal monthly averages", lambda: render_seasonal_pattern(result, agent), ho),
+        ]),
+        ("Probabilities", [
+            item("Price distribution & EV", lambda: render_prob_dist(result, agent, sel_h, sel_bin)),
+            item("Scenario impact", lambda: render_scenario_impact(result, sel_h), ho),
+            item("KO by contract", lambda: render_ko_table(result, agent, vctx), ho),
+            item("At expiration", lambda: render_expiry_distribution_table(result, agent, vctx), ho),
+        ]),
+        ("Volatility & Risk (SD)", [
+            item("Volatility (std. dev.)", lambda: render_volatility(result, vctx)),
+            item("VaR & Expected Shortfall", lambda: render_var_es(result, agent), ho),
+        ]),
+        ("Curves & Spreads", [
+            item("Forward curve & calendar spreads", lambda: render_curve_spreads(result), ho),
+            item("Crack spread", lambda: render_crack_spread(result, agent), ho),
+            item("Chicago basis & Brazil PPI", lambda: render_basis_ppi(result), ho),
+            item("EIA inventory", lambda: render_eia_deep_dive(result), ho and cfg.get("EIA_ENABLED")),
+        ]),
+        ("Scenarios", [item("Scenario simulation", lambda: render_scenario(result, agent, sel_scen))]),
+        ("Regional", [item("Regional price map", lambda: render_regional(result, agent, sel_reg))]),
+        ("Track Record", [item("Forecast track record", lambda: render_track_record(result, vctx), ho)]),
+        ("Summary & Logs", [item("Market summary & logs", lambda: _render_summary_logs(result, vctx, ho))]),
+    ]
+    return [(cat, [i for i in items if i]) for cat, items in layout if any(items)]
+
+
+def _render_tab_layout(layout):
+    """Category tabs; a category with several measures gets a second row of sub-tabs."""
+    for (cat, items), tab in zip(layout, st.tabs([cat for cat, _ in layout])):
+        with tab:
+            if len(items) == 1:
+                items[0][1]()
+                continue
+            for (_lbl, fn), sub in zip(items, st.tabs([lbl for lbl, _ in items])):
+                with sub:
+                    fn()
+
+
+def _render_summary_logs(result, vctx, ho):
+    section("MARKET SUMMARY")
     with st.expander("View full summary",expanded=False):
         st.code(result.get("summary",""),language=None)
     with st.expander("Run log",expanded=False):
